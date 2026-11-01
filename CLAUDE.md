@@ -56,7 +56,7 @@ There is no unit test framework. The automated checks are `test:protocol` (plain
 
 Worker messages:
 - `run` → `result`/`error`; while it runs, `output` messages (`{id, text}`, `id` undefined for a program, the input's id for a REPL input) stream what was printed, at most 50 per 50 ms. The final message brings the whole output again.
-- `test` → first as `run` (`result`/`error`, a fresh REPL session from these files), then `test-result` (the doctests' report; `{skipped: true}` if the file failed). With `coverage: true` the report has `uncovered` (`doctests.py` records the lines with `sys.monitoring` during the examples only; `check-runtime-coverage.py` compares with Python's `trace`); the UI shows it only when all examples pass.
+- `test` → first as `run` (`result`/`error`, a fresh REPL session from these files), then `test-result` (the doctests' report; `{skipped: true}` if the file failed). Examples compare values: `_GlpythonOutputChecker` passes an example whose expected text and output are each one literal and equal with `==` (`4` for `4.0`), else doctest's own check. With `coverage: true` the report has `uncovered` (`doctests.py` records the lines with `sys.monitoring` during the examples only; `check-runtime-coverage.py` compares with Python's `trace`); the UI shows it only when all examples pass.
 - `run-visual` → `trace-result` (`{trace, ast, output, graphics, error, errorMessage, truncated}`)
 - `repl` → `repl-result`
 - `run-visual-repl` (a doctest example) → `trace-result` with `rootPath`/`sources`, or `repl-result` if the input doesn't parse

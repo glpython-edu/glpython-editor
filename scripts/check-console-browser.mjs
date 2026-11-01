@@ -38,10 +38,11 @@ const harness = `<!doctype html><meta charset="utf-8"><body style="margin:0">
 
 const program = (examples) => `def schnitt(a, b):\n    """\n${examples.map(([call, want]) => `    >>> ${call}\n    ${want}\n`).join('')}    """\n    return (a + b) / 2\n`
 // Enough failing examples that the report is taller than the console.
-const failing = program([['schnitt(4, 6)', '5'], ['schnitt(6, 4)', '4.5'], ['schnitt(2, 2)', '3'], ['schnitt(1, 1)', '7'], ['schnitt(0, 4)', '1']])
+const failing = program([['schnitt(4, 6)', '6'], ['schnitt(6, 4)', '4.5'], ['schnitt(2, 2)', '3'], ['schnitt(1, 1)', '7'], ['schnitt(0, 4)', '1']])
 const edited = program([['schnitt(4, 6)', '5.0'], ['schnitt(6, 4)', '4.5'], ['schnitt(2, 2)', '3'], ['schnitt(1, 1)', '7'], ['schnitt(0, 4)', '1']])
-const passing = program([['schnitt(4, 6)', '5.0']])
-const passingEdited = program([['schnitt(4, 6)', '5.0'], ['schnitt(1, 2)', '1.5']])
+// "5" for 5.0 passes: Tests compares values, not their display.
+const passing = program([['schnitt(4, 6)', '5']])
+const passingEdited = program([['schnitt(4, 6)', '5'], ['schnitt(1, 2)', '1.5']])
 
 let failed = 0
 const browser = await chromium.launch({ channel: 'chrome', headless: true })

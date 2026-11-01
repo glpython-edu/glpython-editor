@@ -153,7 +153,18 @@ examples passed, then each failing example in doctest's own words (`Failed
 example:`, `Expected:`, `Got:` stay untranslated) with a button that visualizes
 that example step by step against the same definitions. If the example didn't
 raise, the visualization's last step shows the two texts doctest compared next
-to the final value (`exampleGotExpected`, e.g. «Erhalten: 4.0 · Erwartet: 4»). An example that printed
+to the final value (`exampleGotExpected`, e.g. «Erhalten: 4.5 · Erwartet: 4»).
+
+Unlike Python's doctest, an example compares **values, not their display**:
+when the expected text and the output are each one Python literal (numbers,
+strings, lists, tuples, dicts, sets, `True`/`False`/`None`, nested), it passes
+if the two values are equal with `==` - `4` for `4.0`, `[1,2,30]` for
+`[1, 2, 30]`, `["+", 1]` for `['+', 1]`, and, as `==` says, `1` for `True`
+(no tolerance: `0.3` for `0.1 + 0.2` fails). Anything else - exceptions,
+several lines of output, objects such as `<function f at 0x…>`, other text -
+and an example with a comparison flag of its own (`ELLIPSIS`,
+`NORMALIZE_WHITESPACE`, …) is compared as doctest does. The report shows both
+texts as written. An example that printed
 what was expected but returned `None` passes, as in doctest, with a separate
 glpython hint that it probably should `return` instead. Texts: `runTests`,
 `testsRunning`, `testsSummary`, `testsNone`, `testsLoadError`,

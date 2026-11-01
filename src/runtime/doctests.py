@@ -13,13 +13,38 @@ import types
 # _glpython_run_visual_repl).
 _glpython_test_namespace = {}
 
+# Compares values, not their display: when the expected text and the output
+# are each one Python literal (numbers, strings, lists, tuples, dicts, sets,
+# True/False/None, nested), the example passes if the two values are equal
+# with ==, so "4" matches 4.0, "[1,2,30]" matches [1, 2, 30] and "+" in
+# double quotes matches '+'. Everything else - exceptions, several lines,
+# objects like <function f at 0x...>, other text - and every example with a
+# comparison flag of its own (ELLIPSIS, NORMALIZE_WHITESPACE, ...) is checked
+# as doctest does.
+def _glpython_literal(text):
+  text = text.removesuffix("\n")
+  if not text.strip() or "\n" in text:
+    raise ValueError("not one line")
+  return ast.literal_eval(text.strip())
+
+class _GlpythonOutputChecker(doctest.OutputChecker):
+  def check_output(self, want, got, optionflags):
+    if super().check_output(want, got, optionflags):
+      return True
+    if optionflags & doctest.COMPARISON_FLAGS:
+      return False
+    try:
+      return bool(_glpython_literal(want) == _glpython_literal(got))
+    except Exception:
+      return False
+
 class _GlpythonDocTestRunner(doctest.DocTestRunner):
   # Records each failing example with doctest's own report text ("Failed
   # example:", "Expected:", "Got:" - never translated), and notes examples
   # that printed what was expected while the call itself returned None: they
   # pass in doctest, but usually mean print was used instead of return.
   def __init__(self):
-    super().__init__(verbose=False)
+    super().__init__(checker=_GlpythonOutputChecker(), verbose=False)
     self.failed_examples = []
     self.print_hints = []
     self._displayed = []
