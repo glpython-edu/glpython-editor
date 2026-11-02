@@ -82,6 +82,7 @@ export const coreStrings: Record<UiLocale, CoreStrings> = {
     graphicsEmptyAfter: 'runs.',
     graphicsCollapsedLabel: 'Graphics',
     inputDialogTitle: 'Program input',
+    programInputLabel: 'Input for the program',
     inputDialogFallbackPrompt: 'This program is asking for input:',
     inputPlaceholder: 'Type your answer...',
     inputCancel: 'Cancel',
@@ -160,6 +161,7 @@ export const coreStrings: Record<UiLocale, CoreStrings> = {
     graphicsEmptyAfter: 'importiert.',
     graphicsCollapsedLabel: 'Grafik',
     inputDialogTitle: 'Programmeingabe',
+    programInputLabel: 'Eingabe für das Programm',
     inputDialogFallbackPrompt: 'Dieses Programm bittet um eine Eingabe:',
     inputPlaceholder: 'Antwort eingeben...',
     inputCancel: 'Abbrechen',
@@ -198,6 +200,8 @@ function germanErrorHint(hint: ErrorHint, context: ErrorHintContext): string | n
       return 'Die Liste hat weniger Elemente, als der Index verlangt. Die Zählung beginnt bei 0.'
     case 'doctest-blank':
       return `Nach \`>>>\` fehlt ein Leerzeichen (Zeile ${hint.line}).`
+    case 'input-unavailable':
+      return '`input()` funktioniert hier nicht: Diese Seite kann nicht auf eine Eingabe warten. In der IDE fragt die Konsole danach.'
     default:
       return null
   }
@@ -225,6 +229,8 @@ function englishErrorHint(hint: ErrorHint, context: ErrorHintContext): string | 
       return 'The list has fewer elements than the index asks for. Counting starts at 0.'
     case 'doctest-blank':
       return `A space is missing after \`>>>\` (line ${hint.line}).`
+    case 'input-unavailable':
+      return "`input()` doesn't work here: this page can't wait for an answer. In the IDE, the console asks for it."
     default:
       return null
   }

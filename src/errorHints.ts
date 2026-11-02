@@ -11,6 +11,7 @@ export type ErrorHint =
   | { kind: 'recursion' }
   | { kind: 'list-index' }
   | { kind: 'doctest-blank'; line: number }
+  | { kind: 'input-unavailable' }
 
 // Where the error showed up: the REPL adds a question for an undefined name.
 export type ErrorHintContext = 'repl' | 'other'

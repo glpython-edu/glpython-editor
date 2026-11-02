@@ -193,8 +193,9 @@ docstring, which don't change what runs; the file itself is shown as written.
 Below an error, glpython adds one short hint for the unit's common mistakes:
 an undefined name, missing or too many arguments, a `None` operand (a
 function that prints instead of returning), text plus a number, a division
-by zero, endless recursion, a list index out of range, and a doctest example
-without a blank after `>>>`. Python's message and traceback stay exactly as
+by zero, endless recursion, a list index out of range, a doctest example
+without a blank after `>>>`, and `input()` where the page can't wait for an
+answer (see `input()` below). Python's message and traceback stay exactly as
 they are, and a failing test still fails. A hint is matched on the
 exception's type and message (`src/runtime/hints.py`); anything else gets no
 hint. It shows in the Run output, the REPL, the Tests report and below the
@@ -242,6 +243,28 @@ comes out differently (e.g. random numbers), the entry shows a note
 it was. An input that doesn't compile has no button. Disable the REPL with
 `capabilities={{ repl: false }}`; the embed shows it in `eval` mode only, and
 resetting the embed discards the namespace.
+
+### `input()`
+
+A program (or a REPL input such as `repl()`) that calls `input(prompt)` asks in
+the console, as in a terminal: while it waits, the `>>>` line becomes the
+program's input line, with the prompt in front of it and the cursor in it
+(`programInputLabel` for screen readers). Enter sends the line; the prompt and
+the answer then stay in the transcript as one line (`> 2 * 3`), followed by
+what the program prints. Python's `input()` and the transcript otherwise behave
+as in a terminal: the answer comes without the newline, a recursive REPL of
+the learner's own works, and **Stop** (or Ctrl+D in an empty line) ends the
+wait with `EOFError: EOF when reading a line`, which the program can catch -
+Python isn't restarted then. Tests ask the same way (the file runs first, as
+with Run), and the visualizer asks while it records the run, then shows the
+steps; the `input(...)` call is one step with the typed text as its value.
+Only a host that hides the console (no REPL and no `emptyOutput`, during a
+visualization without output) asks in a dialog (`inputDialogTitle`, …) instead.
+
+`input()` needs cross-origin isolation (see below). Without it, the program
+stops with `RuntimeError: input() is not available here` and the hint
+`input-unavailable` («`input()` funktioniert hier nicht … In der IDE fragt die
+Konsole danach.»). That is the case in an embed inside LiaScript.
 
 ### Stacked layout (the IDE)
 

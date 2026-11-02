@@ -255,6 +255,9 @@
 .repl-line { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--glp-surface); border-top: 1px solid var(--glp-border); }
 .repl-prompt { flex-shrink: 0; color: var(--glp-text-muted); font: 600 15px/1.6 var(--glp-font-code); }
 .repl-input { flex: 1; min-width: 0; padding: 4px 8px; color: var(--glp-text); background: var(--glp-bg); border: 1px solid var(--glp-border-control); border-radius: var(--glp-radius); font: 15px/1.6 var(--glp-font-code); }
+/* The same line while the program waits in input(): its prompt instead of >>>. */
+.repl-line--program .repl-prompt { max-width: 60%; overflow: hidden; color: var(--glp-text); font-weight: 400; white-space: pre; text-overflow: ellipsis; }
+.repl-line--program .repl-input { border-color: var(--glp-accent); }
 
 /* Nested call boxes list their variables in a row below their code instead of
    a side panel: each level of nesting would otherwise add a whole panel's width,
