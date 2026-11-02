@@ -74,6 +74,9 @@ CASES = [
      {"kind": "zero-division"}),
     ("IndexError", "zahlen = [1, 2, 3]\nprint(zahlen[3])\n", "IndexError: list index out of range",
      {"kind": "list-index"}),
+    # input_bridge.py raises this where the page can't wait for an answer.
+    ("input unavailable", "raise RuntimeError('input() is not available here')\n", "RuntimeError: input() is not available here",
+     {"kind": "input-unavailable"}),
 ]
 for label, source, message, hint in CASES:
     for where, (got_message, got_hint) in (("run", run(source)), ("visualizer", visualize(source))):

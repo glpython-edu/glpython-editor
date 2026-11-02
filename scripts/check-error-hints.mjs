@@ -50,6 +50,9 @@ const cases = [
   [{ kind: 'doctest-blank', line: 3 },
     'Nach `>>>` fehlt ein Leerzeichen (Zeile 3).',
     'A space is missing after `>>>` (line 3).'],
+  [{ kind: 'input-unavailable' },
+    '`input()` funktioniert hier nicht: Diese Seite kann nicht auf eine Eingabe warten. In der IDE fragt die Konsole danach.',
+    "`input()` doesn't work here: this page can't wait for an answer. In the IDE, the console asks for it."],
 ]
 for (const [hint, german, english] of cases) {
   assert.equal(de.errorHint(hint, 'other'), german)

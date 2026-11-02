@@ -28,6 +28,10 @@ const REPL_PATH = '<repl>'
 let inputControl = null
 let inputPayload = null
 const INPUT_CANCELLED_MARKER = '__GLPYTHON_INPUT_CANCELLED__'
+const INPUT_UNAVAILABLE_MARKER = '__GLPYTHON_INPUT_UNAVAILABLE__'
+// The stream of what the running program or REPL input prints (see
+// outputStream), sent on before input() waits.
+let activeStream = null
 
 
 // Python source shared by both run modes: monkeypatches builtins.input to bridge
@@ -76,13 +80,14 @@ async function mountProjectFiles(pyodide, files) {
   callPython(pyodide, '_glpython_invalidate_modules', JSON.stringify([...mountedFiles, 'gturtle.py'].map((path) => `/${path}`)))
 }
 
-// Bridges Python's input() to a dialog on the main page. Blocks this worker
-// thread (via Atomics.wait) until the main thread writes a response into the
-// shared buffer set up by the 'init-input-channel' message below.
+// Bridges Python's input() to the page, which asks in the console. Blocks
+// this worker thread (via Atomics.wait) until the main thread writes a
+// response into the shared buffer set up by the 'init-input-channel' message
+// below. What was printed before goes out first: while the thread waits, the
+// stream's held-back text couldn't.
 function requestInputFromMainThread(promptText) {
-  if (!inputControl || !inputPayload) {
-    throw new Error('Program input is not available in this browser session. Reload the page and try again.')
-  }
+  if (!inputControl || !inputPayload) throw new Error(INPUT_UNAVAILABLE_MARKER)
+  activeStream?.flush()
   Atomics.store(inputControl, 0, 1)
   self.postMessage({ type: 'input_request', prompt: promptText })
   Atomics.wait(inputControl, 0, 1)
@@ -180,7 +185,7 @@ function outputStream(id) {
   let pending = ''
   let windowStart = 0
   let sent = 0
-  return (text) => {
+  const stream = (text) => {
     pending += text
     const now = Date.now()
     if (now - windowStart >= 50) {
@@ -193,6 +198,13 @@ function outputStream(id) {
       sent += 1
     }
   }
+  stream.flush = () => {
+    if (!pending) return
+    self.postMessage({ type: 'output', id, text: pending })
+    pending = ''
+  }
+  activeStream = stream
+  return stream
 }
 
 // Run: mounts the project's files and runs its main file in a fresh REPL

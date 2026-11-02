@@ -7,6 +7,9 @@
 // With "coverage" in features (P23), a report that all passed lists the
 // lines no example executed - which also checks that Pyodide's Python has
 // sys.monitoring - and without it, or with a failing example, it doesn't.
+// input() (P36) asks in the console's input line where the parent page is
+// cross-origin isolated (a recursive REPL, Stop and Ctrl+D → EOFError, the
+// visualizer), and without isolation stops with an error and its hint.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -141,6 +144,99 @@ try {
       const coverage = (await frame.locator('.test-coverage').allInnerTexts()).map((text) => text.replace(/\n+/g, '\n'))
       assert.deepEqual(coverage, expected === null ? [] : [expected], label)
       console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(error.message)
+    }
+    await page.close()
+  }
+
+  // input() asks in the console's input line (P36). The parent page sends
+  // COOP/COEP, so the embed is cross-origin isolated and can wait, as the IDE.
+  const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
+  const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
+  const openEmbed = async (headers) => {
+    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness, headers }))
+    await page.goto(`${origin}/check-console.html`)
+    await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
+    return page
+  }
+  const consoleText = (frame) => frame.locator('.console').innerText()
+  const programLine = (frame) => frame.locator('.repl-line--program .repl-input')
+  // A REPL input, once the REPL is free again (until then it keeps the text).
+  const enterRepl = async (frame, text) => {
+    const repl = frame.locator('.repl-line .repl-input')
+    await frame.getByRole('textbox', { name: 'Python-Eingabe' }).fill(text)
+    for (let attempt = 0; attempt < 100 && await repl.inputValue() === text; attempt++) {
+      await repl.press('Enter')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+  const answer = async (frame, text, prompt = '> ') => {
+    await programLine(frame).waitFor({ timeout: 30000 })
+    assert.equal(await frame.locator('.repl-line--program .repl-prompt').textContent(), prompt, 'the input line shows the prompt')
+    // While it waits, the REPL's >>> line is the program's input line.
+    assert.equal(await frame.locator('.repl-line:not(.repl-line--program)').count(), 0, 'no >>> line while the program waits')
+    await programLine(frame).fill(text)
+    await programLine(frame).press('Enter')
+  }
+  {
+    const page = await openEmbed(isolated)
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('run', source), language)
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      await enterRepl(frame, 'repl()')
+      // The input line takes the focus (and keeps the >>> line's).
+      await programLine(frame).waitFor({ timeout: 30000 })
+      assert.ok(await programLine(frame).evaluate((element) => element === document.activeElement), 'the input line has the focus')
+      await answer(frame, '1 + 2')
+      await answer(frame, '2 * (3 + 4)')
+      await answer(frame, 'ende')
+      await frame.locator('.repl-line:not(.repl-line--program)').waitFor({ timeout: 30000 })
+      assert.match(await consoleText(frame), />>> repl\(\)\n> 1 \+ 2\n3\n> 2 \* \(3 \+ 4\)\n14\n> ende/, 'transcript of the recursive REPL')
+      console.log('input(): a recursive REPL in the console: ok')
+
+      // Stop while it waits: EOFError, Python keeps its session.
+      await enterRepl(frame, 'repl()')
+      await answer(frame, '5 * 5')
+      await programLine(frame).waitFor({ timeout: 30000 })
+      await page.evaluate(() => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:stop', version: 4 }, location.origin))
+      await frame.locator('.repl-line:not(.repl-line--program)').waitFor({ timeout: 30000 })
+      const stopped = await consoleText(frame)
+      assert.match(stopped, /> 5 \* 5\n25\n> \n[\s\S]*EOFError: EOF when reading a line/, 'Stop → EOFError after the prompt')
+      assert.doesNotMatch(stopped, /Python wurde neu gestartet/, 'Stop while waiting does not restart Python')
+      // Ctrl+D in the empty line does the same.
+      await enterRepl(frame, 'input("Name: ")')
+      await programLine(frame).waitFor({ timeout: 30000 })
+      await programLine(frame).press('Control+d')
+      await frame.locator('.repl-line:not(.repl-line--program)').waitFor({ timeout: 30000 })
+      assert.match(await consoleText(frame), /Name: \n[\s\S]*EOFError/, 'Ctrl+D → EOFError')
+      console.log('input(): Stop and Ctrl+D end the wait with EOFError: ok')
+
+      // The visualizer asks while it records, then shows the steps.
+      await page.evaluate((source) => window.send('visualize', source), 'text = input("> ")\nprint(eval(text))\n')
+      await answer(frame, '2 * 3')
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      console.log('input(): the visualizer asks, then shows the steps: ok')
+    } catch (error) {
+      failed += 1
+      console.error(error.message)
+      console.error('console:', JSON.stringify(await consoleText(frame).catch(() => '?')))
+    }
+    await page.close()
+  }
+  // Without isolation (as in LiaScript): Python's error and the hint.
+  {
+    const page = await openEmbed({})
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('run', source), 'x = input("> ")\n')
+      await frame.locator('.console').getByText('RuntimeError: input() is not available here').waitFor({ timeout: 60000 })
+      assert.match(await consoleText(frame), /`?input\(\)`? funktioniert hier nicht/, 'the hint')
+      assert.equal(await frame.locator('.input-dialog').count(), 0, 'no dialog')
+      console.log('input() without isolation: error and hint: ok')
     } catch (error) {
       failed += 1
       console.error(error.message)

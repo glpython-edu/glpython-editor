@@ -39,4 +39,8 @@ def _glpython_error_hint(error):
   elif kind == "IndexError":
     if message == "list index out of range":
       return {"kind": "list-index"}
+  elif kind == "RuntimeError":
+    # input_bridge.py, where the page can't wait for an answer.
+    if message == "input() is not available here":
+      return {"kind": "input-unavailable"}
   return None
