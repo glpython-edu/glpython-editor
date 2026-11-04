@@ -103,6 +103,13 @@
 .input-dialog-field { padding: 9px 11px; border: 1px solid var(--glp-border-control); border-radius: var(--glp-radius); font: 15px var(--glp-font-code); background: var(--glp-bg); color: var(--glp-text); }
 .input-dialog-field:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: 2px; }
 .input-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* An abbreviated value in the visualizer in full (FullValueDialog). */
+.full-value-dialog { max-width: min(720px, 100%); max-height: calc(100vh - 40px); }
+.full-value-title { font-family: var(--glp-font-code); }
+.full-value-length { color: var(--glp-text-muted); font-size: 13px; font-weight: 400; }
+.full-value-close { margin-left: auto; }
+.full-value-text { min-height: 0; margin: 0; padding: 10px 12px; overflow: auto; color: var(--glp-text); background: var(--glp-surface); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); font: 14px/1.6 var(--glp-font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.full-value-cut { margin: 0; color: var(--glp-text-muted); font-size: 13px; }
 
 @media (max-width: 760px) {
   .editor-header { align-items: flex-start; flex-direction: column; gap: 12px; }
@@ -196,6 +203,14 @@
    for the transform to take effect, since these spans otherwise lay out as
    plain inline text. */
 .visual-substituted-value { display: inline-block; }
+/* A long value stays inline and wraps where the line ends instead of running
+   on below the variables panel (and isn't flown in). */
+.visual-substituted-value--long { display: inline; white-space: pre-wrap; overflow-wrap: anywhere; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+/* An abbreviated value ("[1, 2, 3, 4, 5, …, 100]") opens in full. */
+.visual-value-more { cursor: pointer; }
+.visual-value-more-text { text-decoration: underline dotted; text-underline-offset: 3px; }
+.visual-value-more:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: 1px; }
+.locals-value-length { display: block; color: var(--glp-text-muted); font-size: 12px; }
 .visualizer-animated .visual-substituted-value { animation: visual-return-fly-in .4s ease-out backwards; }
 @keyframes visual-return-fly-in {
   from { transform: translate(var(--return-dx, 0px), var(--return-dy, 0px)); }

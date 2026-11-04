@@ -1,11 +1,11 @@
 import { createPortal } from 'react-dom'
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import Editor, { useMonaco } from '@monaco-editor/react'
 import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, hasEvaluationChain, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type OpenFrame, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, hasEvaluationChain, fullValuesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
 import { tokenizePythonFragment } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -135,6 +135,14 @@ type CoreStrings = {
   inputDialogTitle: string
   // The console's input line while the program waits in input() (its label for screen readers).
   programInputLabel?: string
+  // An abbreviated value in the visualizer ("[1, 2, 3, 4, 5, …, 100]"): the
+  // title of the button showing it in full, how many elements or characters
+  // it has (`kind` is Python's type name), and its dialog.
+  visualizerShowFullValue?: string
+  visualizerValueLength?: (length: number, kind: string | null) => string
+  visualizerFullValueTitle?: (name: string | null) => string
+  visualizerFullValueCut?: string
+  visualizerCloseFullValue?: string
   inputDialogFallbackPrompt: string
   inputPlaceholder: string
   inputCancel: string
@@ -479,9 +487,76 @@ function buildLineSegments(
 // their own dedicated color instead (see the `className` branch below) and
 // are never re-tokenized.
 function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind: 'text' }>; monaco: Monaco | null }) {
-  if (segment.className || !monaco || segment.text === '') return <span className={segment.className} data-annotation-node-id={segment.annotationNodeId}>{segment.text}</span>
+  if (segment.className || !monaco || segment.text === '') return <ValueText text={segment.text} className={segment.className} annotationNodeId={segment.annotationNodeId} />
   const runs = tokenizePythonFragment(monaco, segment.text)
   return <>{runs.map((run, index) => <span key={index} className={run.className}>{run.text}</span>)}</>
+}
+
+// The full values behind the abbreviated texts shown at the current step
+// (see fullValuesUpTo), and how to open one in FullValueDialog.
+type FullValueAccess = { values: Map<string, FullValue>; open: (value: FullValue, name: string | null) => void; t: CoreStrings }
+const FullValueContext = createContext<FullValueAccess | null>(null)
+
+// A loop variable's annotation reads "=[1, 2, …, 100]".
+function lookupFullValue(access: FullValueAccess | null, text: string): FullValue | null {
+  if (!access || !text.includes('\u2026')) return null
+  return access.values.get(text) ?? (text.startsWith('=') ? access.values.get(text.slice(1)) ?? null : null)
+}
+
+function openOnKey(event: KeyboardEvent, open: () => void) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  open()
+}
+
+// A substituted value or annotation in a line; an abbreviated one opens its
+// full value. A span, not a button, so the line's text stays as it was. A
+// long value is plain inline text, which wraps where the line ends.
+const LONG_VALUE_LENGTH = 30
+function ValueText({ text, className: baseClassName, annotationNodeId }: { text: string; className?: string; annotationNodeId?: number }) {
+  const access = useContext(FullValueContext)
+  const full = lookupFullValue(access, text)
+  const className = text.length > LONG_VALUE_LENGTH && baseClassName?.includes('visual-substituted-value') ? `${baseClassName} visual-substituted-value--long` : baseClassName
+  if (!access || !full) return <span className={className} data-annotation-node-id={annotationNodeId}>{text}</span>
+  const open = () => access.open(full, null)
+  return <span className={`${className ?? ''} visual-value-more visual-value-more-text`} data-annotation-node-id={annotationNodeId} role="button" tabIndex={0} title={access.t.visualizerShowFullValue ?? 'Show the full value'} onClick={open} onKeyDown={(event) => openOnKey(event, open)}>{text}</span>
+}
+
+function fullValueLength(value: FullValue, t: CoreStrings): string | null {
+  if (value.length === null) return null
+  return t.visualizerValueLength?.(value.length, value.kind) ?? `${value.length} ${value.kind === 'str' ? 'characters' : value.kind === 'dict' ? 'entries' : 'items'}`
+}
+
+// A variable in a frame's panel; an abbreviated value opens in full, with
+// its length below it.
+function LocalsValue({ name, value, className }: { name: string; value: string; className: string }) {
+  const access = useContext(FullValueContext)
+  const full = lookupFullValue(access, value)
+  if (!access || !full) return <span className={className}>{value}</span>
+  const open = () => access.open(full, name)
+  const length = fullValueLength(full, access.t)
+  return <span className={`${className} visual-value-more`} role="button" tabIndex={0} title={access.t.visualizerShowFullValue ?? 'Show the full value'} onClick={open} onKeyDown={(event) => openOnKey(event, open)}><span className="visual-value-more-text">{value}</span>{length && <span className="locals-value-length">{length}</span>}</span>
+}
+
+// A long value in full, readable and scrollable.
+function FullValueDialog({ value, name, t, onClose }: { value: FullValue; name: string | null; t: CoreStrings; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    closeRef.current?.focus()
+    return () => previous?.focus()
+  }, [])
+  const title = t.visualizerFullValueTitle?.(name) ?? (name ?? 'Value')
+  const length = fullValueLength(value, t)
+  return (
+    <div className="input-dialog-backdrop" role="presentation" onClick={onClose}>
+      <div className="input-dialog full-value-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <div className="input-dialog-heading"><span className="full-value-title">{title}</span>{length && <span className="full-value-length">{length}</span>}<button type="button" ref={closeRef} className="icon-button small full-value-close" aria-label={t.visualizerCloseFullValue ?? 'Close'} title={t.visualizerCloseFullValue ?? 'Close'} onClick={onClose}><X size={16} /></button></div>
+        <pre className="full-value-text" tabIndex={0}>{value.text}{value.cut && '\u2026'}</pre>
+        {value.cut && <p className="full-value-cut">{t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
+      </div>
+    </div>
+  )
 }
 
 // Which source span a Frame renders: the outermost module/global scope
@@ -726,7 +801,7 @@ function Frame(props: FrameProps) {
     </span>
   ) : segment.kind === 'group' ? (
     <span key={segmentIndex} className={segment.className}>
-      {segment.parts.map((part, partIndex) => <span key={partIndex} className={part.className} data-annotation-node-id={part.annotationNodeId}>{part.text}</span>)}
+      {segment.parts.map((part, partIndex) => <ValueText key={partIndex} text={part.text} className={part.className} annotationNodeId={part.annotationNodeId} />)}
     </span>
   ) : (
     <TextSegment key={segmentIndex} segment={segment} monaco={monaco} />
@@ -806,7 +881,7 @@ function Frame(props: FrameProps) {
       {localEntries.length > 0 && <>
         <div className="frame-divider" />
         <div className="frame-vars">
-          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span><span className={`locals-value${value === null ? ' locals-value-pending' : Object.hasOwn(valueKindLabels, value) ? ' locals-value-kind' : ''}`} key={value ?? 'pending'}>{value === null ? '\u2026' : valueKindLabels[value] ?? value}</span></div>)}
+          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" />}</div>)}
         </div>
       </>}
     </div>
@@ -1001,6 +1076,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     class: t.valueKindClass ?? 'class',
     module: t.valueKindModule ?? 'module',
   }), [t])
+  // The abbreviated value shown in full (FullValueDialog), with its variable's name.
+  const [fullValueView, setFullValueView] = useState<{ value: FullValue; name: string | null } | null>(null)
   // While a failing doctest example is visualized: the texts doctest compared.
   const [exampleExpectation, setExampleExpectation] = useState<{ got: string; want: string } | null>(null)
   const [isTesting, setIsTesting] = useState(false)
@@ -1288,6 +1365,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   }
   const exitVisualizer = () => {
     setExampleExpectation(null)
+    setFullValueView(null)
     setVisualTrace(null)
     setVisualStepIndex(-1)
     setVisualRootPath(null)
@@ -1448,6 +1526,11 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // last recorded step (or -1 itself if no steps were recorded at all).
   const clampedStepIndex = Math.min(Math.max(visualStepIndex, -1), Math.max(0, visualTraceSteps.length - 1))
   const currentTraceStep = visualTraceSteps[clampedStepIndex] ?? null
+  const fullValueAccess = useMemo<FullValueAccess>(() => ({
+    values: fullValuesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.values),
+    open: (value, name) => setFullValueView({ value, name }),
+    t,
+  }), [visualTrace, currentTraceStep, t])
   // The step that will run next if the learner clicks "next" - previewed
   // via highlighting its AST span, including before any step has run yet
   // (clampedStepIndex === -1), so the very first statement is shown too.
@@ -2138,7 +2221,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const visualizerBarNode = <div className="visualizer-bar">{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={!substitutionMode} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={substitutionMode} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button></div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}</div>
-  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-view${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><Frame frameId={0} path={visualRootPath ?? activeFile} scope={{ kind: 'module' }} openFrames={framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} nextStep={nextTraceStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={nextStepDeclareTarget} pendingCallLocals={pendingCallLocals} errorStep={isAtErrorStep ? errorTraceStep : null} collapsedCalls={collapsedCalls} collapsedCallsLabel={collapsedCallsLabel} substitutionMode={substitutionMode} boxHint={t.visualizerBoxHint ?? 'The box shows which return is executed.'} insideBox={false} activeHost={activeHost} errorHost={errorHost} finalNote={finalNote} errorHint={isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} />}</div>
+  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-view${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><Frame frameId={0} path={visualRootPath ?? activeFile} scope={{ kind: 'module' }} openFrames={framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} nextStep={nextTraceStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={nextStepDeclareTarget} pendingCallLocals={pendingCallLocals} errorStep={isAtErrorStep ? errorTraceStep : null} collapsedCalls={collapsedCalls} collapsedCallsLabel={collapsedCallsLabel} substitutionMode={substitutionMode} boxHint={t.visualizerBoxHint ?? 'The box shows which return is executed.'} insideBox={false} activeHost={activeHost} errorHost={errorHost} finalNote={finalNote} errorHint={isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} /></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} />}</div>
   const consoleNode = <>{!hideOutputPanel && <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span>{runtimeState !== 'ready' && <span className={`runtime-badge${runtimeState === 'failed' ? ' runtime-badge--failed' : ''}`}><span className="pulse" /> {t.pyodideRuntime}</span>}</div>{Object.keys(project.files).length > 1 && <span className="output-hint">{t.runsFile(project.mainFile)}</span>}</div><div className="console" ref={outputRef} role="log" onScroll={(event) => { const element = event.currentTarget; consoleAtBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24 }}>{isVisualizing ? <pre>{isAtErrorStep ? <>{visualStdout && !visualStdout.endsWith('\n') ? `${visualStdout}\n` : visualStdout}<span className="output-error">{visualTrace?.error}</span></> : visualStdout || t.noOutput}</pre> : <><pre>{output}<ErrorHintNote hint={outputErrorHint} t={t} /></pre>{consoleEntries.map((entry) => entry.kind === 'tests' ? <div key={entry.id} data-console-entry={entry.id}><TestReportView report={entry.report} t={t} onVisualizeExample={workspaceCapabilities.visualization ? visualizeExample : null} /></div> : entry.kind === 'note' ? <p key={entry.id} className="console-note" role="note" data-console-entry={entry.id}>{entry.text}</p> : <pre key={entry.id} data-console-entry={entry.id}><ReplTranscriptEntry entry={entry} definitionHint={t.replDefinitionHint ?? 'Definitions belong in the file.'} t={t} onVisualize={workspaceCapabilities.visualization && entry.result && !entry.result.unparsed && !entry.result.untraced && !entry.stale ? () => visualizeReplEntry(entry.id) : undefined} busy={isBusy} /></pre>)}</>}{answeredInputLines.length > 0 && <pre className="console-answered">{answeredInputLines.join('\n')}</pre>}</div>{(workspaceCapabilities.repl || programInput) && <form className={`repl-line${programInput ? ' repl-line--program' : ''}`} onSubmit={(event) => { event.preventDefault(); if (programInput) respondToInput(false); else submitRepl() }}><span className="repl-prompt" aria-hidden="true">{programInput ? inputRequest : '>>>'}</span><input ref={inputFieldRef} className="repl-input" value={programInput ? inputValue : replInput} onChange={(event) => { if (programInput) { setInputValue(event.target.value) } else { setReplInput(event.target.value); setReplHistoryIndex(null) } }} onKeyDown={handleReplKeyDown} aria-label={programInput ? `${t.programInputLabel ?? 'Input for the program'}${inputRequest ? `: ${inputRequest}` : ''}` : t.replInputLabel ?? 'Python input'} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" enterKeyHint="send" /></form>}</section>}</>
   // In the stacked layout the graphics show only while the program draws -
   // for a visualization: if it draws at all, so the panel doesn't appear in
@@ -2164,6 +2247,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   return (
     <div className={workspaceClassName}>
               {compact ? <div className="main-split"><div className="editor-column"><div className="editor-header">{breadcrumbsNode}{isVisualizing || !actionsNode ? <div className="editor-actions" /> : actionsNode}</div>{isVisualizing && visualizerBarNode}{visualizerWarningNode}{(workspaceCapabilities.editor || isVisualizing) && <section className="editor-panel">{editorTabsNode}{editorWrapNode}</section>}{consoleNode}</div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => onGraphicsOpenChange(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => onGraphicsOpenChange(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div> : <><div className="workspace-stack" ref={stackRef}>{!actionsContainer && (actionsNode || workspaceCapabilities.breadcrumbs) && <div className="editor-header">{workspaceCapabilities.breadcrumbs && breadcrumbsNode}{actionsNode}</div>}<div className="stack-top" style={{ flexBasis: `${(1 - consoleShare) * 100}%` }}><section className="editor-panel"><div className="stack-strip">{isVisualizing ? visualizerBarNode : workspaceCapabilities.fileTabs ? editorTabsNode : null}</div>{visualizerWarningNode}{editorWrapNode}</section>{stackedGraphicsNode}</div><div className="stack-divider" role="separator" aria-orientation="horizontal" aria-label={t.consoleSize ?? 'Console size'} aria-valuemin={Math.round(CONSOLE_SHARE_MIN * 100)} aria-valuemax={Math.round(CONSOLE_SHARE_MAX * 100)} aria-valuenow={Math.round(consoleShare * 100)} tabIndex={0} onPointerDown={startConsoleResize} onKeyDown={resizeConsoleWithKeys} /><div className="stack-console" style={{ flexBasis: `${consoleShare * 100}%` }}>{consoleNode}</div></div>{actionsContainer && actionsNode && createPortal(actionsNode, actionsContainer)}</>}
+      {isVisualizing && fullValueView && <FullValueDialog value={fullValueView.value} name={fullValueView.name} t={t} onClose={() => setFullValueView(null)} />}
       {inputRequest !== null && !programInput && <div className="input-dialog-backdrop" role="presentation" onClick={() => respondToInput(true)}><form className="input-dialog" role="dialog" aria-modal="true" aria-label={t.inputDialogTitle} onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); respondToInput(false) }}><div className="input-dialog-heading"><Terminal size={16} /><span>{t.inputDialogTitle}</span></div><p className="input-dialog-prompt">{inputRequest || t.inputDialogFallbackPrompt}</p><input ref={inputFieldRef} className="input-dialog-field" type="text" value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={t.inputPlaceholder} /><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={() => respondToInput(true)}>{t.inputCancel}</button><button type="submit" className="run-button">{t.inputSubmit}</button></div></form></div>}
     </div>
   )
