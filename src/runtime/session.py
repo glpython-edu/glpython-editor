@@ -4,10 +4,22 @@ import os
 import sys
 import traceback
 
+# A fresh module "__main__", installed as sys.modules["__main__"], and its
+# namespace: as in Python, the file that runs (or the REPL before any Run)
+# is that module, so "import __main__; __main__.x" sees its variables.
+def _glpython_new_main(main_path=None):
+  import types
+  module = types.ModuleType("__main__")
+  if main_path is not None:
+    module.__file__ = main_path
+  module.__builtins__ = builtins
+  sys.modules["__main__"] = module
+  return module.__dict__
+
 # The namespace the last Run executed the main file in. REPL inputs run in it
 # afterwards (like "python -i"), so learners can call the file's functions;
 # the next Run replaces it with a fresh one.
-_glpython_repl_namespace = {"__name__": "__main__", "__builtins__": builtins}
+_glpython_repl_namespace = _glpython_new_main()
 
 # The project's files are mounted at "/" (and gturtle.py next to them), so a
 # REPL input can import them even before the first Run - e.g. right after a
@@ -100,7 +112,7 @@ def _glpython_run_project(main_path):
   global _glpython_repl_namespace, _glpython_last_error_report
   # Assigned before running, so a file that fails halfway still leaves its
   # earlier definitions callable.
-  _glpython_repl_namespace = {"__name__": "__main__", "__file__": main_path, "__builtins__": builtins}
+  _glpython_repl_namespace = _glpython_new_main(main_path)
   _glpython_last_error_report = None
   try:
     _glpython_exec_main(main_path, _glpython_repl_namespace)
@@ -188,19 +200,20 @@ def _glpython_replay_project_modules(paths):
 def _glpython_replay_begin(project_paths_json):
   global _glpython_replay_namespace, _glpython_replay_saved, _glpython_replay_used_input
   paths = set(json.loads(project_paths_json))
+  original_main = sys.modules.get("__main__")
   saved = _glpython_replay_project_modules(paths)
   for name in saved:
     del sys.modules[name]
-  _glpython_replay_saved = (saved, paths, builtins.input)
+  _glpython_replay_saved = (saved, paths, builtins.input, original_main)
   builtins.input = _glpython_replay_blocked_input
   _glpython_replay_used_input = False
   # Inputs typed before any Run ran in an empty namespace.
-  _glpython_replay_namespace = {"__name__": "__main__", "__builtins__": builtins}
+  _glpython_replay_namespace = _glpython_new_main()
 
 # Python's traceback, as the Run reported it, or "" if the file ran through.
 def _glpython_replay_file(main_path):
   global _glpython_replay_namespace
-  _glpython_replay_namespace = {"__name__": "__main__", "__file__": main_path, "__builtins__": builtins}
+  _glpython_replay_namespace = _glpython_new_main(main_path)
   try:
     _glpython_exec_main(main_path, _glpython_replay_namespace)
     return ""
@@ -217,10 +230,11 @@ def _glpython_replay_end():
   global _glpython_replay_namespace, _glpython_replay_saved
   if _glpython_replay_saved is None:
     return
-  saved, paths, original_input = _glpython_replay_saved
+  saved, paths, original_input, original_main = _glpython_replay_saved
   for name in _glpython_replay_project_modules(paths):
     del sys.modules[name]
   sys.modules.update(saved)
+  sys.modules["__main__"] = original_main
   builtins.input = original_input
   _glpython_replay_namespace = None
   _glpython_replay_saved = None
