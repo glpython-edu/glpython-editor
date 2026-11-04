@@ -611,7 +611,13 @@ def _eval_unaryop(node, scope):
   if _glpython_is_negative_number(node):
     return value
   symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
-  _glpython_record(node, "eval", f"{symbol}{_glpython_safe_repr(operand, 40)}", _glpython_safe_repr(value), _glpython_current_func())
+  text = f"{symbol}{_glpython_safe_repr(operand, 40)}"
+  value_text = _glpython_safe_repr(value)
+  # "-x" with x = 7 already reads "-7" once x is replaced: no step that
+  # changes nothing (but "-x" with x = -7 reads "--7", which becomes 7).
+  if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Name) and text == value_text:
+    return value
+  _glpython_record(node, "eval", text, value_text, _glpython_current_func())
   return value
 
 def _eval_boolop(node, scope):

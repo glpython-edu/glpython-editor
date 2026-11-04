@@ -142,7 +142,9 @@ no steps at all, nested at any depth and with negative numbers (`-3`, `-2.5`):
 only the parts that change have steps: `[1 + 2, 3, 4] → [3, 3, 4]`,
 `["+", 1, ["*", n, 3]] → ["+", 1, ["*", 2, 3]]`. A display keeps its step only
 where its value reads differently: unpacking (`[*a, 2] → [1, 2]`) and a set or
-dict whose duplicates go (`{1, 1} → {1}`).
+dict whose duplicates go (`{1, 1} → {1}`). Likewise `-x` with `x = 7` is one
+step, to `-7`; the minus has a step of its own only where it changes what is
+shown (`-x` with `x = -7` reads `--7`, then `7`).
 
 A long value is abbreviated, in the step and in the variables panel alike,
 keeping its first elements and its last one: `[1, 2, 3, 4, 5, …, 100]`.
