@@ -12,6 +12,7 @@
 // visualizer), and without isolation stops with an error and its hint.
 // The visualizer (P39): a named list indexed in one step, a long list
 // abbreviated in the step and the variables and shown in full on request.
+// The run file is the module __main__ (P37), also in the REPL after it.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -278,6 +279,25 @@ try {
     } catch (error) {
       failed += 1
       console.error(error.message)
+    }
+    await page.close()
+  }
+  // P37: the run file is __main__, in Pyodide too.
+  {
+    const page = await openEmbed({})
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('run', source), 'x = 2\nimport __main__\nprint("x ist", __main__.x)\nif __name__ == "__main__":\n    print("als Programm")\n')
+      await frame.locator('.console').getByText('als Programm').waitFor({ timeout: 60000 })
+      assert.match(await consoleText(frame), /x ist 2/, 'after a Run')
+      await enterRepl(frame, 'y = 5')
+      await enterRepl(frame, '__main__.y * 10')
+      await frame.locator('.console').getByText('50', { exact: true }).waitFor({ timeout: 30000 })
+      console.log('__main__: the run file and the REPL: ok')
+    } catch (error) {
+      failed += 1
+      console.error(error.message)
+      console.error('console:', JSON.stringify(await consoleText(frame).catch(() => '?')))
     }
     await page.close()
   }

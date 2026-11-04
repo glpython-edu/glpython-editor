@@ -254,7 +254,11 @@ as Reset does, with `{ id, type: 'reset' }`), and learn when Python is busy thro
 ### REPL
 
 Below the console, a `>>>` input line runs Python in the namespace of the
-last Run, so learners can call the file's functions directly. An expression
+last Run, so learners can call the file's functions directly. As in
+`python3 -i main.py`, that namespace is the module `__main__`: the file runs
+with `__name__ == "__main__"`, and `import __main__; __main__.x` sees its
+variables, in the REPL, the visualizer and the Tests' Run too (before any
+Run, the REPL's own namespace is `__main__`). An expression
 shows its value, except `None`, as in CPython's REPL (so a call of a function
 without `return`, `print(...)` or `help(...)` shows only what it printed); a
 statement such as `a = 5` shows

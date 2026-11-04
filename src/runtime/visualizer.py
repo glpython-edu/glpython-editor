@@ -536,12 +536,16 @@ def _glpython_fallback_exec(node, scope):
   ast.fix_missing_locations(module)
   code = compile(module, "<glpython>", "exec")
   env = _glpython_flatten_scope(scope)
+  before = dict(env)
   exec(code, env)
   # Write back any names the fallback statement touched so subsequent
   # hand-rolled statements see the effects (best-effort: module-level and
   # local names only, matching this interpreter's simplified scoping model).
+  # A dunder name only if the statement set it ("import __main__").
   for name, value in env.items():
-    if not name.startswith("__") and (name in scope.vars or scope.parent is None):
+    if name.startswith("__") and (name == "__builtins__" or (name in before and before[name] is value)):
+      continue
+    if name in scope.vars or scope.parent is None:
       scope.vars[name] = value
 
 def _glpython_summary_for_node(node):
@@ -1550,7 +1554,11 @@ def _glpython_fill_scope_from_repl(scope, trees, main_path, values):
   for name, value in values.items():
     if name == "__builtins__":
       continue
-    if isinstance(value, _glpython_types.FunctionType):
+    if isinstance(value, _glpython_types.ModuleType) and value.__dict__ is values:
+      # "import __main__" in the file: the traced module, so that the input
+      # stays a dry run (see _glpython_trace_program).
+      value = sys.modules["__main__"]
+    elif isinstance(value, _glpython_types.FunctionType):
       found = defs.get((value.__code__.co_filename, value.__name__, value.__code__.co_firstlineno))
       if found is not None:
         # _GlpythonFunction takes the file its "def" lives in from here.
@@ -1647,6 +1655,9 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   # swallowing all of that run's output ("Keine Ausgabe" bug).
   original_stdout = sys.stdout
   original_stderr = sys.stderr
+  # The traced file is the module "__main__" while it runs, as in a Run (see
+  # _glpython_new_main); the REPL's own one comes back afterwards.
+  original_main = sys.modules.get("__main__")
   capture = _GlpythonCapture()
   sys.stdout = capture
   sys.stderr = capture
@@ -1657,7 +1668,7 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   truncated = False
   value = None
   try:
-    module_vars = {"__name__": "__main__", "__file__": main_path}
+    module_vars = _glpython_new_main(main_path)
     _glpython_module_scope = _GlpythonScope(module_vars, parent=None, kind="module")
     if fill_scope is not None:
       fill_scope(_glpython_module_scope, trees)
@@ -1690,6 +1701,7 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   finally:
     sys.stdout = original_stdout
     sys.stderr = original_stderr
+    sys.modules["__main__"] = original_main
 
   return json.dumps({
     "trace": _glpython_trace_log,

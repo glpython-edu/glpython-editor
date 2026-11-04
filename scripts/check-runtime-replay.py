@@ -80,7 +80,7 @@ def session(files, inputs, label):
     run_output = ""
     if not files:
         # A worker where nothing ran yet.
-        runtime["_glpython_repl_namespace"] = {"__name__": "__main__", "__builtins__": builtins}
+        runtime["_glpython_repl_namespace"] = runtime["_glpython_new_main"]()
     else:
         try:
             _, run_output = captured(runtime["_glpython_run_project"], main)
