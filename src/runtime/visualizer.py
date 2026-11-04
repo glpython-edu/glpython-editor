@@ -600,10 +600,16 @@ def _eval_binop(node, scope):
   _glpython_record(node, "eval", f"{_glpython_safe_repr(left, 40)} {symbol} {_glpython_safe_repr(right, 40)}", _glpython_safe_repr(value), _glpython_current_func())
   return value
 
+# A negative number ("-3", "-2.5") is a literal, as on paper: no step.
+def _glpython_is_negative_number(node):
+  return isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float, complex)
+
 def _eval_unaryop(node, scope):
   operand = _glpython_eval(node.operand, scope)
   op_func = _GLPYTHON_UNARY_OPS.get(type(node.op))
   value = op_func(operand) if op_func else _glpython_fallback_eval(node, scope)
+  if _glpython_is_negative_number(node):
+    return value
   symbol = _GLPYTHON_OP_SYMBOLS.get(type(node.op), "?")
   _glpython_record(node, "eval", f"{symbol}{_glpython_safe_repr(operand, 40)}", _glpython_safe_repr(value), _glpython_current_func())
   return value
@@ -647,30 +653,52 @@ def _eval_ifexp(node, scope):
   _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(value), _glpython_current_func())
   return value
 
-def _eval_list(node, scope):
-  values = [_glpython_eval(item, scope) for item in node.elts]
-  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
+# A display ("[1, 2]", "(a, b)", "{x}", "{k: v}") has no step of its own:
+# once its parts are values, it already reads as its value, as on paper - so
+# a display of literals has no steps at all, and "[1 + 2, 3]" only the one of
+# "1 + 2". Only where the value reads differently is there a step:
+# unpacking ("[*a, 2]", "{**d}") and a set or dict whose duplicates go.
+def _glpython_record_display(node, value, rewrites):
+  if rewrites:
+    _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(value), _glpython_current_func())
+  return value
+
+def _glpython_display_items(node, scope):
+  values = []
+  for item in node.elts:
+    if isinstance(item, ast.Starred):
+      values.extend(_glpython_eval(item, scope))
+    else:
+      values.append(_glpython_eval(item, scope))
   return values
+
+def _glpython_has_starred(node):
+  return any(isinstance(item, ast.Starred) for item in node.elts)
+
+def _eval_list(node, scope):
+  return _glpython_record_display(node, _glpython_display_items(node, scope), _glpython_has_starred(node))
 
 def _eval_tuple(node, scope):
-  values = tuple(_glpython_eval(item, scope) for item in node.elts)
-  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
-  return values
+  return _glpython_record_display(node, tuple(_glpython_display_items(node, scope)), _glpython_has_starred(node))
 
 def _eval_set(node, scope):
-  values = {_glpython_eval(item, scope) for item in node.elts}
-  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(values), _glpython_current_func())
-  return values
+  values = _glpython_display_items(node, scope)
+  result = set(values)
+  return _glpython_record_display(node, result, _glpython_has_starred(node) or len(result) < len(values))
 
 def _eval_dict(node, scope):
   result = {}
+  entries = 0
   for key_node, value_node in zip(node.keys, node.values):
     if key_node is None:
       result.update(_glpython_eval(value_node, scope))
+      entries = None
     else:
-      result[_glpython_eval(key_node, scope)] = _glpython_eval(value_node, scope)
-  _glpython_record(node, "eval", _glpython_node_source(node), _glpython_safe_repr(result), _glpython_current_func())
-  return result
+      key = _glpython_eval(key_node, scope)
+      result[key] = _glpython_eval(value_node, scope)
+      if entries is not None:
+        entries += 1
+  return _glpython_record_display(node, result, entries is None or len(result) < entries)
 
 def _eval_attribute(node, scope):
   target = _glpython_eval(node.value, scope)

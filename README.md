@@ -133,7 +133,16 @@ the variables panel. The same holds for a tuple, a string or a dict, and for a
 slice (`w[1:3]`). A variable passed to a call is still replaced by its value
 (`notenschnitt(noten) → notenschnitt([5, 4.5, 6])`), and so is a parameter in a
 substituted function's expression. A list written out and indexed directly
-(`[1, 2, 30][1]`) keeps its own step.
+is one step too: `[1, 2, 30][1] → 2`.
+
+A list, tuple, set or dict written out has no step of its own: once its parts
+are values, it reads as its value, as on paper. So a display of literals has
+no steps at all, nested at any depth and with negative numbers (`-3`, `-2.5`):
+`baum = ["+", ["*", 2, ["-", 7, -3]], 4]` is one step, the assignment. Otherwise
+only the parts that change have steps: `[1 + 2, 3, 4] → [3, 3, 4]`,
+`["+", 1, ["*", n, 3]] → ["+", 1, ["*", 2, 3]]`. A display keeps its step only
+where its value reads differently: unpacking (`[*a, 2] → [1, 2]`) and a set or
+dict whose duplicates go (`{1, 1} → {1}`).
 
 A long value is abbreviated, in the step and in the variables panel alike,
 keeping its first elements and its last one: `[1, 2, 3, 4, 5, …, 100]`.
