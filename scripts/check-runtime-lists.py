@@ -1,7 +1,10 @@
-"""Regression test: lists in the visualizer (P39). Indexing a named list is
+"""Regression test: lists in the visualizer (P39, P40). Indexing a named list is
 one step to the element ("dauer[1]" -> "2", not first "[1, 2, 30][1]"), as
 the course writes chains on paper; a named list passed to a call is still
-replaced by its value, and a list literal indexed directly keeps its step.
+replaced by its value, and a list literal indexed directly is one step.
+A display ("[1, 2]", "(a, b)", "{x}", "{k: v}") has no step of its own: of
+literals (negative numbers too) it has none at all, otherwise only its parts
+that change have one.
 A long value is abbreviated ("[1, 2, 3, 4, 5, …, 100]"), the same in the
 step and in the variables panel, with its full value in the trace's
 "values"; short values and the course's expression trees stay complete.
@@ -43,8 +46,8 @@ result = trace("dauer = [1, 2, 30]\nx = dauer[1]\ny = dauer[0] + dauer[1]\nz = [
 expect("dauer[1]", evals_on_line(result, 2), [("dauer[1]", "2")])
 expect("dauer[0] + dauer[1]", evals_on_line(result, 3), [("dauer[0]", "1"), ("dauer[1]", "2"), ("1 + 2", "3")])
 expect("the list in the panel", result["trace"][-1]["locals"]["dauer"], "[1, 2, 30]")
-# A literal list indexed directly: its own step, then the element.
-expect("[1, 2, 30][1]", evals_on_line(result, 4), [("[1, 2, 30]", "[1, 2, 30]"), ("[1, 2, 30][1]", "2")])
+# A literal list indexed directly: one step to the element.
+expect("[1, 2, 30][1]", evals_on_line(result, 4), [("[1, 2, 30][1]", "2")])
 
 # The same for a tuple, a string, a dict, a slice, an index that is a
 # variable (its value is shown) and a list in a list.
@@ -94,6 +97,52 @@ for value in (list(range(10)), ["+", 1, ["*", 2, 3]], ["+", ["*", 2, ["-", 7, 3]
     expect(f"complete: {value!r}", repr_of(value), repr(value))
 result = trace('baum = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], 3]]\n')
 expect("expression tree: no full value", (result["values"], result["trace"][-1]["locals"]["baum"]), ([], "['+', ['*', 2, ['-', 7, 3]], ['/', ['+', 1, 2], 3]]"))
+
+# A display of literals is a value: no steps but the assignment, nested at
+# any depth, negative numbers included (P40).
+def steps_on_line(result, line):
+    return [(step["kind"], step["label"], step.get("valueText")) for step in result["trace"] if step["line"] == line]
+
+LITERALS = [
+    'baum = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], 3]]',
+    'baum = ["-", 7, -3]',
+    'baum = [-1, 2]',
+    'baum = (-2.5, ("a", -1j), {"k": [-1, {2, -3}]}, {-4})',
+    'baum = -3',
+]
+for line in LITERALS:
+    result = trace(line + "\n")
+    expect(f"no steps: {line}", [kind for kind, _, _ in steps_on_line(result, 1)], ["exec"])
+    expect(f"its value: {line}", result["trace"][-1]["locals"]["baum"], repr(eval(line.split(" = ", 1)[1])))
+
+# Names, calls and operators keep their steps; the display builds none.
+for setup, line, expected, value in [
+    ("", "w = [1 + 2, 3, 4]", [("1 + 2", "3")], "[3, 3, 4]"),
+    ("a = 5", "w = [a, 2]", [("a", "5")], "[5, 2]"),
+    ("x = 7", "w = [[1, 2], x]", [("x", "7")], "[[1, 2], 7]"),
+    ("n = 2", 'w = ["+", 1, ["*", n, 3]]', [("n", "2")], "['+', 1, ['*', 2, 3]]"),
+    ("n = 2", "w = (n, -n, {n: [n]})", [("n", "2"), ("n", "2"), ("-2", "-2"), ("n", "2"), ("n", "2")], "(2, -2, {2: [2]})"),
+    ("", "w = [len([1, 2]), 3]", [("len(...)", "2")], "[2, 3]"),
+]:
+    result = trace(f"{setup}\n{line}\n")
+    expect(f"one step each: {line}", evals_on_line(result, 2), expected)
+    expect(f"the assignment: {line}", [label for kind, label, _ in steps_on_line(result, 2) if kind == "exec"], [f"w = {value}"])
+
+# Where the value reads differently from the display, the display has its
+# step: unpacking, and duplicates in a set or dict. Unpacking as in Python.
+for setup, line, expected in [
+    ("b = [1]", "w = [*b, 2]", [("b", "[1]"), ("[*b, 2]", "[1, 2]")]),
+    ("b = [1]", "w = (*b, 2)", [("b", "[1]"), ("(*b, 2)", "(1, 2)")]),
+    ("b = [1]", "w = {*b, 2}", [("b", "[1]"), ("{*b, 2}", "{1, 2}")]),
+    ('d = {"k": 1}', 'w = {**d, "j": 2}', [("d", "{'k': 1}"), ('{**d, "j": 2}', "{'k': 1, 'j': 2}")]),
+    ("", "w = {1, 1}", [("{1, 1}", "{1}")]),
+    ("", 'w = {"a": 1, "a": 2}', [('{"a": 1, "a": 2}', "{'a': 2}")]),
+]:
+    result = trace(f"{setup}\n{line}\n")
+    expect(f"display step: {line}", evals_on_line(result, 2), expected)
+    namespace_python = {}
+    exec(f"{setup}\n{line}\n", namespace_python)
+    expect(f"value: {line}", result["trace"][-1]["locals"]["w"], repr(namespace_python["w"]))
 
 # How other long values are abbreviated: dicts, sets and tuples as lists,
 # a list in a list, long strings in their middle, recursion as Python shows it.

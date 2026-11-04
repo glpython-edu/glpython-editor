@@ -12,6 +12,8 @@
 // visualizer), and without isolation stops with an error and its hint.
 // The visualizer (P39): a named list indexed in one step, a long list
 // abbreviated in the step and the variables and shown in full on request.
+// A display of literals has no steps, in Ersetzung and Kasten (P40); every
+// step changes the code or the variables.
 // The run file is the module __main__ (P37), also in the REPL after it.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
@@ -276,6 +278,35 @@ try {
         await dialog.waitFor({ state: 'detached', timeout: 5000 })
       }
       console.log('visualizer: a long list abbreviated, in full on request: ok')
+
+      // P40: only the parts that change have steps, in both modes.
+      const displays = 'baum = ["+", ["*", 2, ["-", 7, -3]], ["/", ["+", 1, 2], 3]]\nr = [-1, 2]\nx = [1 + 2, 3, 4]\na = 5\ny = [a, 2]\nn = 2\nw = ["+", 1, ["*", n, 3]]\n'
+      for (const mode of ['Kasten', 'Ersetzung']) {
+        await frame.locator('.visualizer-mode').getByRole('button', { name: mode }).click()
+        await page.evaluate((source) => window.send('visualize', source), displays)
+        await frame.locator('.frame-box--root > .frame-code .frame-line').filter({ hasText: 'baum = ' }).waitFor({ timeout: 30000 })
+        if (!(await stepButton(0).isDisabled())) await stepButton(0).click()
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 5000 })
+        const snapshot = async () => JSON.stringify([await lines(), await frame.locator('.locals-row').allInnerTexts()])
+        const seen = { 1: [], 3: [], 5: [], 7: [] }
+        let previous = await snapshot()
+        let steps = 0
+        while (!(await stepButton(2).isDisabled())) {
+          await stepButton(2).click()
+          steps += 1
+          const current = await snapshot()
+          assert.notEqual(current, previous, `${mode}, step ${steps}: something changes`)
+          previous = current
+          const texts = await lines()
+          for (const line of [1, 3, 5, 7]) if (seen[line].at(-1) !== texts[line - 1]) seen[line].push(texts[line - 1])
+        }
+        assert.equal(steps, 10, `${mode}: seven assignments and three substitutions`)
+        assert.deepEqual(seen[1], ['baum = ["+", ["*", 2, ["-", 7, -3]], ["/", ["+", 1, 2], 3]]'], `${mode}: the literal tree`)
+        assert.ok(seen[3].includes('x = [3, 3, 4]'), `${mode}: [1 + 2, 3, 4]: ${JSON.stringify(seen[3])}`)
+        assert.ok(seen[5].includes('y = [5, 2]'), `${mode}: [a, 2]: ${JSON.stringify(seen[5])}`)
+        assert.ok(seen[7].includes('w = ["+", 1, ["*", 2, 3]]'), `${mode}: the tree with n: ${JSON.stringify(seen[7])}`)
+      }
+      console.log('visualizer: a display of literals has no steps: ok')
     } catch (error) {
       failed += 1
       console.error(error.message)
