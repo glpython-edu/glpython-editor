@@ -167,7 +167,15 @@ try {
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
     return page
   }
-  const consoleText = (frame) => frame.locator('.console').innerText()
+  // The transcript as it reads, without the entries' Visualize buttons: next
+  // to a ">>>" line or on a line of their own, depending on the width.
+  const consoleText = (frame) => frame.locator('.console').evaluate((console) => {
+    const buttons = [...console.querySelectorAll('.repl-entry-visualize')]
+    for (const button of buttons) button.style.display = 'none'
+    const text = console.innerText
+    for (const button of buttons) button.style.display = ''
+    return text
+  })
   const programLine = (frame) => frame.locator('.repl-line--program .repl-input')
   // A REPL input, once the REPL is free again (until then it keeps the text).
   const enterRepl = async (frame, text) => {

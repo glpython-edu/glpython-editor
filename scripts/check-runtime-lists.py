@@ -121,12 +121,25 @@ for setup, line, expected, value in [
     ("a = 5", "w = [a, 2]", [("a", "5")], "[5, 2]"),
     ("x = 7", "w = [[1, 2], x]", [("x", "7")], "[[1, 2], 7]"),
     ("n = 2", 'w = ["+", 1, ["*", n, 3]]', [("n", "2")], "['+', 1, ['*', 2, 3]]"),
-    ("n = 2", "w = (n, -n, {n: [n]})", [("n", "2"), ("n", "2"), ("-2", "-2"), ("n", "2"), ("n", "2")], "(2, -2, {2: [2]})"),
+    ("n = 2", "w = (n, -n, {n: [n]})", [("n", "2"), ("n", "2"), ("n", "2"), ("n", "2")], "(2, -2, {2: [2]})"),
     ("", "w = [len([1, 2]), 3]", [("len(...)", "2")], "[2, 3]"),
 ]:
     result = trace(f"{setup}\n{line}\n")
     expect(f"one step each: {line}", evals_on_line(result, 2), expected)
     expect(f"the assignment: {line}", [label for kind, label, _ in steps_on_line(result, 2) if kind == "exec"], [f"w = {value}"])
+
+# "-x" is one step, to x's value, where that already reads as the result;
+# where it doesn't ("--7", "-True", "-(a + b)"), the minus has its step.
+for setup, line, expected in [
+    ("x = 7", "w = -x", [("x", "7")]),
+    ("x = 2.5", "w = -x", [("x", "2.5")]),
+    ("x = -7", "w = -x", [("x", "-7"), ("--7", "7")]),
+    ("x = True", "w = -x", [("x", "True"), ("-True", "-1")]),
+    ("a = 1\nb = 2", "w = -(a + b)", [("a", "1"), ("b", "2"), ("1 + 2", "3"), ("-3", "-3")]),
+]:
+    result = trace(f"{setup}\n{line}\n")
+    row = setup.count("\n") + 2
+    expect(f"unary: {setup}; {line}", evals_on_line(result, row), expected)
 
 # Where the value reads differently from the display, the display has its
 # step: unpacking, and duplicates in a set or dict. Unpacking as in Python.
