@@ -10,6 +10,8 @@
 // input() (P36) asks in the console's input line where the parent page is
 // cross-origin isolated (a recursive REPL, Stop and Ctrl+D → EOFError, the
 // visualizer), and without isolation stops with an error and its hint.
+// The visualizer (P39): a named list indexed in one step, a long list
+// abbreviated in the step and the variables and shown in full on request.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -224,6 +226,58 @@ try {
       failed += 1
       console.error(error.message)
       console.error('console:', JSON.stringify(await consoleText(frame).catch(() => '?')))
+    }
+    await page.close()
+  }
+  // The visualizer (P39), in Ersetzung: indexing a named list is one step,
+  // a named list passed to a call is still replaced by its value. A long
+  // list is abbreviated in the step and in the variables, within the code's
+  // width, and opens in full; an expression tree stays complete.
+  {
+    const page = await openEmbed({})
+    const frame = page.frameLocator('#embed')
+    const lines = () => frame.locator('.frame-box--root > .frame-code > .frame-line-row .frame-line').allInnerTexts()
+    const stepButton = (index) => frame.locator('.visualizer-controls button').nth(index)
+    try {
+      await page.evaluate((source) => window.send('visualize', source), 'def notenschnitt(noten):\n    return sum(noten) / len(noten)\n\ndauer = [1, 2, 30]\nx = dauer[0] + dauer[1]\ny = [1, 2, 30][1]\nschnitt = notenschnitt(dauer)\n')
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      const seen = { 5: [], 6: [], 7: [] }
+      while (!(await stepButton(2).isDisabled())) {
+        await stepButton(2).click()
+        const texts = await lines()
+        for (const line of [5, 6, 7]) if (seen[line].at(-1) !== texts[line - 1]) seen[line].push(texts[line - 1])
+      }
+      assert.deepEqual(seen[5], ['x = dauer[0] + dauer[1]', 'x = 1 + dauer[1]', 'x = 1 + 2', 'x = 3'], 'dauer[0] + dauer[1]: one step per element')
+      assert.deepEqual(seen[6], ['y = [1, 2, 30][1]', 'y = 2'], 'a list literal indexed directly')
+      assert.ok(seen[7].includes('schnitt = notenschnitt([1, 2, 30])'), `a named list passed to a call: ${JSON.stringify(seen[7])}`)
+      console.log('visualizer: a named list indexed in one step: ok')
+
+      await page.evaluate((source) => window.send('visualize', source), 'l = list(range(1, 101))\nbaum = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], 3]]\n')
+      await stepButton(3).click()
+      await frame.locator('.locals-row[data-name="baum"]').waitFor({ timeout: 30000 })
+      const short = '[1, 2, 3, 4, 5, …, 100]'
+      assert.equal((await lines())[0], `l = ${short}`, 'the step: abbreviated')
+      const panelValue = frame.locator('.locals-row[data-name="l"] .locals-value')
+      assert.equal(await panelValue.locator('.visual-value-more-text').innerText(), short, 'the variables: the same abbreviation')
+      assert.equal(await panelValue.locator('.locals-value-length').innerText(), '100 Werte', 'its length')
+      assert.equal(await frame.locator('.locals-row[data-name="baum"] .locals-value').innerText(), "['+', ['*', 2, ['-', 7, 3]], ['/', ['+', 1, 2], 3]]", 'an expression tree: complete')
+      const inline = frame.locator('.frame-box--root .visual-substituted-value.visual-value-more').first()
+      const codeBox = await frame.locator('.frame-box--root > .frame-code').boundingBox()
+      const valueBox = await inline.boundingBox()
+      assert.ok(valueBox.x + valueBox.width <= codeBox.x + codeBox.width, 'the step value stays within the code')
+      const full = `[${Array.from({ length: 100 }, (_, index) => index + 1).join(', ')}]`
+      for (const [label, target] of [['the variables', panelValue], ['the step', inline]]) {
+        await target.click()
+        const dialog = frame.getByRole('dialog')
+        assert.equal(await dialog.locator('.full-value-text').innerText(), full, `${label}: the full value`)
+        assert.match(await dialog.locator('.input-dialog-heading').innerText(), /100 Werte/, `${label}: its length`)
+        await page.keyboard.press('Escape')
+        await dialog.waitFor({ state: 'detached', timeout: 5000 })
+      }
+      console.log('visualizer: a long list abbreviated, in full on request: ok')
+    } catch (error) {
+      failed += 1
+      console.error(error.message)
     }
     await page.close()
   }

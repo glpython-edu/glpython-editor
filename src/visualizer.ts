@@ -33,6 +33,9 @@ export type TraceStep = {
   // e.g. a bare `pass` or an assignment target already covered by locals).
   valueText: string | null
   locals: Record<string, string>
+  // The abbreviated texts among this step's values ("[1, 2, 3, 4, 5, …, 100]"),
+  // each with its full value's index in TraceResult.values.
+  fullValues?: Record<string, number>
   stdoutLen: number
   graphicsLen: number
   // Only present on "loop-iter" steps: every node id inside the loop body,
@@ -146,9 +149,31 @@ export type TraceResult = {
   // The hint for that error, if it is one of the unit's common mistakes.
   errorHint?: ErrorHint | null
   truncated: boolean
+  // The full values behind abbreviated texts (see TraceStep.fullValues).
+  values?: FullValue[]
   // Per file, what call boxes leave out: comments and docstrings, as
   // [line, col, end line, end col] (see _glpython_hidden_ranges).
   hidden?: Record<string, Array<[number, number, number, number]>>
+}
+
+// A long value in full: Python's repr (`cut` when it's longer than the
+// runtime keeps), with the number of its elements or characters.
+export type FullValue = { text: string; cut: boolean; length: number | null; kind: string | null }
+
+// The full value behind each abbreviated text shown up to `uptoStep`; a later
+// step's wins, since the same abbreviation can stand for a value that changed
+// in the middle.
+export function fullValuesUpTo(trace: TraceStep[], uptoStep: number, values: FullValue[] | undefined): Map<string, FullValue> {
+  const result = new Map<string, FullValue>()
+  if (!values || values.length === 0) return result
+  for (const step of trace) {
+    if (step.step > uptoStep) break
+    for (const [text, index] of Object.entries(step.fullValues ?? {})) {
+      const value = values[index]
+      if (value) result.set(text, value)
+    }
+  }
+  return result
 }
 
 // A file's hidden ranges (see TraceResult.hidden) as character ranges that

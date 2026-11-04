@@ -57,14 +57,117 @@ def _glpython_is_uninteresting_for_substitution(value):
 # the way learners write it ("int", "list", "NoneType" instead of
 # "<class 'int'>"), so "type(a) != list" steps to "int != list". The program's
 # own output (print, the REPL transcript) keeps Python's repr.
+#
+# A long value is abbreviated as reprlib does, but keeping the last element:
+# "[1, 2, 3, 4, 5, …, 100]". A list, tuple, set or dict of up to 10 elements
+# is shown completely (so are the course's expression trees); a longer one
+# keeps its first 5 and its last. If that is still longer than `limit`, fewer
+# elements and shortened strings, until it fits. A string is shortened in
+# its middle: "'Es war einmal…Ende.'". The full value goes to the
+# trace's "values" (see _glpython_note_abbreviation), for the UI to show on
+# request.
+_GLPYTHON_ABBREVIATION_LEVELS = (
+  # (most elements shown completely, elements kept before "…", longest
+  # nested string or other value before it's shortened too)
+  (10, 5, None),
+  (10, 5, 40),
+  (4, 3, 16),
+  (2, 1, 8),
+)
+_GLPYTHON_ABBREVIATION_DEPTH = 6
+# A string is shortened from this length on.
+_GLPYTHON_TEXT_LIMIT = 80
+_GLPYTHON_FULL_VALUE_LIMIT = 50000
+_GLPYTHON_ELISION = object()
+
+def _glpython_shorten_text(text, limit):
+  if limit is None or len(text) <= limit:
+    return text
+  tail = max(1, limit // 4)
+  return text[: limit - tail - 1] + "…" + text[-tail:]
+
+def _glpython_abbreviated_repr(value, level, depth, active):
+  most, head, leaf_limit = level
+  kind = type(value)
+  if kind not in (list, tuple, set, frozenset, dict):
+    try:
+      text = repr(value)
+    except Exception:
+      text = "<unrepresentable>"
+    return _glpython_shorten_text(text, leaf_limit)
+  if id(value) in active:
+    return "{...}" if kind is dict else "[...]"
+  if depth >= _GLPYTHON_ABBREVIATION_DEPTH:
+    return {list: "[…]", tuple: "(…)", dict: "{…}"}.get(kind, "{…}")
+  active.add(id(value))
+  try:
+    items = list(value.items()) if kind is dict else list(value)
+    shown = items if len(items) <= most else items[:head] + [_GLPYTHON_ELISION] + items[-1:]
+    parts = []
+    for item in shown:
+      if item is _GLPYTHON_ELISION:
+        parts.append("…")
+      elif kind is dict:
+        parts.append(f"{_glpython_abbreviated_repr(item[0], level, depth + 1, active)}: {_glpython_abbreviated_repr(item[1], level, depth + 1, active)}")
+      else:
+        parts.append(_glpython_abbreviated_repr(item, level, depth + 1, active))
+  finally:
+    active.discard(id(value))
+  inner = ", ".join(parts)
+  if kind is list:
+    return f"[{inner}]"
+  if kind is tuple:
+    return f"({inner},)" if len(items) == 1 else f"({inner})"
+  if kind is dict:
+    return f"{{{inner}}}"
+  if not items:
+    return f"{kind.__name__}()"
+  return f"{{{inner}}}" if kind is set else f"frozenset({{{inner}}})"
+
 def _glpython_safe_repr(value, limit=160):
   try:
     text = value.__name__ if isinstance(value, type) else repr(value)
   except Exception:
     text = "<unrepresentable>"
-  if len(text) > limit:
-    text = text[: limit - 1] + "…"
-  return text
+  if type(value) not in (list, tuple, set, frozenset, dict):
+    shown = _glpython_shorten_text(text, min(limit, _GLPYTHON_TEXT_LIMIT) if isinstance(value, str) else limit)
+  else:
+    shown = None
+    for level in _GLPYTHON_ABBREVIATION_LEVELS:
+      candidate = _glpython_abbreviated_repr(value, level, 0, set())
+      if len(candidate) <= limit:
+        shown = candidate
+        break
+    if shown is None:
+      shown = text[: limit - 1] + "…"
+  if shown != text:
+    _glpython_note_abbreviation(shown, text, value)
+  return shown
+
+# The full values of the texts abbreviated since the last recorded step;
+# _glpython_record hands them to that step as "fullValues" ({shown text:
+# index into the trace's "values"}), each full text stored once per trace.
+_glpython_pending_abbreviations = {}
+_glpython_full_values = []
+_glpython_full_value_index = {}
+
+def _glpython_note_abbreviation(shown, text, value):
+  index = _glpython_full_value_index.get(text)
+  if index is None:
+    try:
+      length = len(value) if isinstance(value, (str, list, tuple, set, frozenset, dict)) else None
+    except Exception:
+      length = None
+    kind = type(value).__name__ if isinstance(value, (str, list, tuple, set, frozenset, dict)) else None
+    index = len(_glpython_full_values)
+    _glpython_full_values.append({
+      "text": text[:_GLPYTHON_FULL_VALUE_LIMIT],
+      "cut": len(text) > _GLPYTHON_FULL_VALUE_LIMIT,
+      "length": length,
+      "kind": kind,
+    })
+    _glpython_full_value_index[text] = index
+  _glpython_pending_abbreviations[shown] = index
 
 def _glpython_describe_for_locals_panel(value):
   # Callables/modules/classes have a noisy, memory-address-bearing repr
@@ -204,6 +307,12 @@ def _glpython_pos(node):
     getattr(node, "_glpython_end_col", getattr(node, "end_col_offset", None)),
   )
 
+def _glpython_append_step(entry):
+  if _glpython_pending_abbreviations:
+    entry["fullValues"] = dict(_glpython_pending_abbreviations)
+    _glpython_pending_abbreviations.clear()
+  _glpython_trace_log.append(entry)
+
 def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None, closes_frame_id=None, force=False, extra=None):
   global _glpython_step_count
   # `force` is only used for the final "error" step (see
@@ -259,7 +368,7 @@ def _glpython_record(node, kind, label, value_text=None, func_name="<module>", e
   # Fields only some kinds of step carry (see their call sites).
   if extra:
     entry.update(extra)
-  _glpython_trace_log.append(entry)
+  _glpython_append_step(entry)
   _glpython_step_count += 1
 
 def _glpython_record_call_pending(call_node, name, scope):
@@ -312,7 +421,7 @@ def _glpython_record_call_pending(call_node, name, scope):
     "lookupName": name,
     "lookupFrameId": lookup_frame_id,
   }
-  _glpython_trace_log.append(entry)
+  _glpython_append_step(entry)
   _glpython_step_count += 1
 
 def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_frame_id, extra_locals, param_annotations, arg_sources=None, short_form=None):
@@ -370,7 +479,7 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
     "inOperator": getattr(call_node, "_glpython_in_operator", False),
     "hasLocals": getattr(glpython_function.node, "_glpython_has_locals", False),
   }
-  _glpython_trace_log.append(entry)
+  _glpython_append_step(entry)
   _glpython_step_count += 1
 
 def _glpython_snapshot_locals(scope, limit=80):
@@ -470,6 +579,10 @@ def _eval_constant(node, scope):
 
 def _eval_name(node, scope):
   value = scope.get(node.id)
+  # "dauer[1]" is one step to the element, as the course writes it: the
+  # name isn't first replaced by the whole list (see _glpython_indexed).
+  if getattr(node, "_glpython_indexed", False):
+    return value
   value_text = None if _glpython_is_uninteresting_for_substitution(value) else _glpython_safe_repr(value)
   _glpython_record(node, "eval", node.id, value_text, _glpython_current_func())
   return value
@@ -566,7 +679,8 @@ def _eval_subscript(node, scope):
   target = _glpython_eval(node.value, scope)
   index = _glpython_eval(node.slice, scope)
   value = target[index]
-  _glpython_record(node, "eval", f"{_glpython_safe_repr(target, 30)}[{_glpython_safe_repr(index, 20)}]", _glpython_safe_repr(value), _glpython_current_func())
+  target_text = node.value.id if isinstance(node.value, ast.Name) else _glpython_safe_repr(target, 30)
+  _glpython_record(node, "eval", f"{target_text}[{_glpython_safe_repr(index, 20)}]", _glpython_safe_repr(value), _glpython_current_func())
   return value
 
 def _eval_slice(node, scope):
@@ -906,7 +1020,8 @@ def _glpython_names_read(expr):
     yield from _glpython_names_read(child)
 
 # An expression's source with every name in it that currently has a plain
-# value (not a function, class or module) replaced by that value's repr.
+# value (not a function, class or module) replaced by that value's repr -
+# except an indexed one, which "dauer[1]" keeps (see _glpython_indexed).
 def _glpython_source_with_values(expr, scope):
   source = getattr(expr, "_glpython_source", None)
   if source is None or getattr(expr, "lineno", None) is None:
@@ -918,7 +1033,7 @@ def _glpython_source_with_values(expr, scope):
       value = scope.get(name.id)
     except NameError:
       continue
-    if _glpython_is_uninteresting_for_substitution(value) or name.end_lineno != name.lineno:
+    if _glpython_is_uninteresting_for_substitution(value) or name.end_lineno != name.lineno or getattr(name, "_glpython_indexed", False):
       continue
     # Columns are UTF-8 byte offsets; the first line of the source starts at
     # the expression's own column, later lines at column 0.
@@ -1243,6 +1358,10 @@ def _glpython_preprocess(tree, source, counter):
     # A call whose value an operator works on - including the object of an
     # attribute or subscript - needs parentheses around an expression that
     # replaces it (see "parens" on the call-enter step).
+    # The name of an indexed variable ("dauer" in "dauer[1]") gets no step
+    # of its own; the list stays visible in the variables panel.
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+      node.value._glpython_indexed = True
     for child in ast.iter_child_nodes(node):
       if isinstance(child, ast.Call):
         child._glpython_in_operator = isinstance(node, (ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare)) or (isinstance(node, (ast.Attribute, ast.Subscript)) and child is node.value)
@@ -1487,6 +1606,9 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   global _glpython_frame_id_counter, _glpython_frame_stack, _glpython_pending_call_node, _glpython_last_call_frame_id
   _glpython_trace_log = []
   _glpython_step_count = 0
+  _glpython_pending_abbreviations.clear()
+  _glpython_full_values.clear()
+  _glpython_full_value_index.clear()
   _glpython_stdout_len = 0
   _glpython_call_depth = 0
   _glpython_current_func_stack = ["<module>"]
@@ -1580,4 +1702,5 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
     "errorHint": error_hint,
     "truncated": truncated,
     "value": value,
+    "values": _glpython_full_values,
   })

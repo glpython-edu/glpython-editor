@@ -125,6 +125,35 @@ The mode last chosen is remembered per browser. A host can preset it with the
 texts are `visualizerModeLabel`, `visualizerModeBox` and
 `visualizerModeSubstitution`, all optional like `visualizerBoxHint`.
 
+### Lists and long values
+
+Indexing a variable is one step to the element, in both modes:
+`dauer[0] + dauer[1] → 1 + dauer[1] → 1 + 2 → 3`, while the list itself stays in
+the variables panel. The same holds for a tuple, a string or a dict, and for a
+slice (`w[1:3]`). A variable passed to a call is still replaced by its value
+(`notenschnitt(noten) → notenschnitt([5, 4.5, 6])`), and so is a parameter in a
+substituted function's expression. A list written out and indexed directly
+(`[1, 2, 30][1]`) keeps its own step.
+
+A long value is abbreviated, in the step and in the variables panel alike,
+keeping its first elements and its last one: `[1, 2, 3, 4, 5, …, 100]`.
+- **Shown completely:** a list, tuple, set or dict of up to 10 elements, in a
+  value of up to 160 characters (so are the course's expression trees, e.g.
+  `['+', ['*', 2, ['-', 7, 3]], ['/', ['+', 1, 2], 3]]`), and a string of up to
+  80 characters.
+- **Abbreviated:** a longer container keeps its first 5 elements and its last.
+  If that is still longer than 160 characters, it keeps fewer and shortens long
+  elements too. A long string is shortened in the middle.
+- **In full:** an abbreviated value is underlined with dots. A click (or Enter)
+  shows it in full, with its number of elements or characters (`100 Werte`,
+  also below it in the variables panel). The runtime keeps up to 50 000
+  characters of it.
+
+A long value in a line wraps within the code instead of running on below the
+variables panel. Texts: `visualizerShowFullValue`, `visualizerValueLength`,
+`visualizerFullValueTitle`, `visualizerFullValueCut`, `visualizerCloseFullValue`,
+all optional.
+
 ### Copying the evaluation as a → chain
 
 The **Copy → chain** item in the toolbar's **⋯ Options** menu copies the evaluation of the statement
