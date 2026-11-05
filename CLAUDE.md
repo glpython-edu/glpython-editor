@@ -13,7 +13,7 @@ npm run build          # tsc -b && vite build && copy src/style.css -> dist/ (li
 npm run dev            # vite build --watch, for use with npm link/yalc in a host shell
 npm run lint           # oxlint
 npm run test:protocol  # builds the library, then runs scripts/check-embed-protocol.mjs against dist/
-npm run test:runtime   # the runtime under CPython: scripts/check-runtime-{columns,values,doctests,coverage,calls,hints,fidelity,replay,lists,…}.py
+npm run test:runtime   # the runtime under CPython: scripts/check-runtime-{columns,values,doctests,coverage,calls,hints,fidelity,replay,lists,main,trees,…}.py
 npm run test:hints     # the error hints' wording (de/en) against the built dist/ (run a build first)
 npm run test:console   # the console in Chrome with Pyodide, against dist-embed/ (run build:embed first)
 npm run build:embed    # builds the iframe app + demo page into dist-embed/ (plus embed/public/: coi-serviceworker.js)
@@ -54,6 +54,7 @@ There is no unit test framework. The automated checks are `test:protocol` (plain
   - Columns: `ast` counts UTF-8 bytes, `tokenize` characters, the UI UTF-16 code units. Every offset into a line goes through `_glpython_text_before` (the text in front of it, for slicing) or `_glpython_ui_column` (a column for the UI); never slice a line by an `ast` offset directly.
   - Values are shown through `_glpython_safe_repr`, which writes types as learners do (`int`, not `<class 'int'>`); the program's own output keeps Python's repr.
   - It abbreviates long values (`[1, 2, 3, 4, 5, …, 100]`; levels in `_GLPYTHON_ABBREVIATION_LEVELS`) and notes each full text. The next recorded step gets `fullValues` (`{shown text: index}`), the trace result `values` (`{text, cut, length, kind}`). The UI (`fullValuesUpTo`, `ValueText`, `LocalsValue`, `FullValueDialog`) opens one on click.
+  - Lists that read as a tree (`listtree`: first element a string): `session.py`'s `_glpython_tree_of` gives `{label, children}`/`{leaf}`, for the REPL's value (`tree`) and, noted like the full values, for the panel's values (step `trees`, result `trees`). The UI draws them with `TreeView` (`src/TreeView.tsx`, layout in `src/treeLayout.ts`: positions in characters of the code font and in em), behind capability `listTree`.
   - A name indexed in a subscript (`dauer` in `dauer[1]`, `_glpython_indexed`) gets no step of its own, so `dauer[1]` is one step to the element.
   - A display (`[…]`, `(…)`, `{…}`) gets no step of its own (`_glpython_record_display`), only where its value reads differently (unpacking, duplicates); nor does a negative number literal (`_glpython_is_negative_number`), or `-name` where it already reads as its value. Every step must change something.
 

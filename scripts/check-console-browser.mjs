@@ -15,6 +15,9 @@
 // A display of literals has no steps, in Ersetzung and Kasten (P40); every
 // step changes the code or the variables.
 // The run file is the module __main__ (P37), also in the REPL after it.
+// With listtree, lists that read as a tree are drawn as one, in the
+// variables, the full-value dialog and on request for a REPL value; nothing
+// of it without.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -160,17 +163,17 @@ try {
   // COOP/COEP, so the embed is cross-origin isolated and can wait, as the IDE.
   const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
-  const openEmbed = async (headers) => {
+  const openEmbed = async (headers, query = '') => {
     const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness, headers }))
-    await page.goto(`${origin}/check-console.html`)
+    await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
     return page
   }
   // The transcript as it reads, without the entries' Visualize buttons: next
   // to a ">>>" line or on a line of their own, depending on the width.
   const consoleText = (frame) => frame.locator('.console').evaluate((console) => {
-    const buttons = [...console.querySelectorAll('.repl-entry-visualize')]
+    const buttons = [...console.querySelectorAll('.repl-entry-visualize, .repl-entry-tree')]
     for (const button of buttons) button.style.display = 'none'
     const text = console.innerText
     for (const button of buttons) button.style.display = ''
@@ -318,6 +321,79 @@ try {
     } catch (error) {
       failed += 1
       console.error(error.message)
+    }
+    await page.close()
+  }
+  // listtree (P34): trees in the variables, the dialog and the REPL - and
+  // without the feature, none of it.
+  for (const query of ['?features=run,repl,visualize,listtree', '']) {
+    const label = query ? 'listtree' : 'listtree: not without it in features'
+    const page = await openEmbed({}, query)
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('visualize', source), 'baum = ["+", ["var", "x"], ["f", 1, 2]]\ngross = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], ["liste", "anna", "ben", "carla", 12345]]]\nnamen = ["Anna", "Ben"]\n')
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await frame.locator('.visualizer-controls button').nth(3).click()
+      await frame.locator('.locals-row[data-name="namen"]').waitFor({ timeout: 30000 })
+      const treeOf = (name) => frame.locator(`.locals-row[data-name="${name}"] .value-tree`)
+      const parts = (tree) => tree.locator('.value-tree-node, .value-tree-leaf').allInnerTexts()
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const toggle = frame.getByRole('menuitemcheckbox', { name: 'Listen als Baum zeigen' })
+      if (!query) {
+        assert.equal(await frame.locator('.value-tree, .locals-tree').count(), 0, 'no trees')
+        assert.equal(await toggle.count(), 0, 'no switch')
+      } else {
+        await page.keyboard.press('Escape')
+        assert.deepEqual(await parts(treeOf('baum')), ['+', 'var', "'x'", 'f', '1', '2'], 'the tree, labels without quotes')
+        assert.equal(await treeOf('baum').getAttribute('aria-label'), "['+', ['var', 'x'], ['f', 1, 2]]", 'its text alternative')
+        assert.equal(await frame.locator('.locals-row[data-name="baum"] .locals-value').innerText(), "['+', ['var', 'x'], ['f', 1, 2]]", 'the text stays')
+        // No two nodes overlap; each child is below its parent; the tree
+        // stays within the panel.
+        const boxes = await treeOf('baum').locator('.value-tree-node, .value-tree-leaf').evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))
+        for (const [index, a] of boxes.entries()) for (const b of boxes.slice(index + 1)) assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, `nodes overlap: ${JSON.stringify([a, b])}`)
+        assert.ok(boxes[1].top > boxes[0].bottom, 'a child below its parent')
+        const row = await frame.locator('.locals-row[data-name="baum"]').boundingBox()
+        assert.ok(Math.max(...boxes.map((box) => box.right)) <= row.x + row.width, 'within the panel')
+        assert.deepEqual(await parts(treeOf('namen')), ['Anna', "'Ben'"], 'a list of names reads as a tree too')
+        // Too wide for the panel: in the dialog.
+        assert.equal(await treeOf('gross').count(), 0, 'a wide tree: not in the panel')
+        await frame.locator('.locals-row[data-name="gross"] .locals-tree-more').click()
+        const dialog = frame.getByRole('dialog')
+        assert.ok((await parts(dialog.locator('.value-tree'))).includes('liste'), 'a wide tree: in the dialog')
+        await page.keyboard.press('Escape')
+        await dialog.waitFor({ state: 'detached', timeout: 5000 })
+        // The switch.
+        await frame.getByRole('button', { name: 'Optionen' }).click()
+        await toggle.click()
+        await frame.locator('.value-tree').first().waitFor({ state: 'detached', timeout: 5000 })
+        if (!(await toggle.isVisible())) await frame.getByRole('button', { name: 'Optionen' }).click()
+        await toggle.click()
+        await treeOf('baum').waitFor({ timeout: 5000 })
+        await page.keyboard.press('Escape')
+      }
+      // The REPL: a «Baum» button for a value that reads as a tree.
+      await frame.locator('.visualizer-exit').click()
+      await page.evaluate((source) => window.send('run', source), 'def parse(text):\n    return ["+", 2, ["*", 3, 4]]\n')
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      await enterRepl(frame, 'parse("2 + 3 * 4")')
+      await frame.locator('.repl-value').getByText("['+', 2, ['*', 3, 4]]").waitFor({ timeout: 30000 })
+      const button = frame.getByRole('button', { name: 'Baum: parse("2 + 3 * 4")' })
+      if (!query) {
+        assert.equal(await button.count(), 0, 'no «Baum» in the REPL')
+      } else {
+        assert.equal(await button.getAttribute('aria-pressed'), 'false', 'closed at first')
+        await button.click()
+        assert.deepEqual(await parts(frame.locator('.repl-tree .value-tree')), ['+', '2', '*', '3', '4'], 'the REPL value as a tree')
+        await button.click()
+        assert.equal(await frame.locator('.repl-tree').count(), 0, 'closed again')
+        await enterRepl(frame, '[1, 2]')
+        await frame.locator('.repl-value').getByText('[1, 2]', { exact: true }).waitFor({ timeout: 30000 })
+        assert.equal(await frame.getByRole('button', { name: 'Baum: [1, 2]' }).count(), 0, 'no «Baum» for a list that is no tree')
+      }
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
     }
     await page.close()
   }

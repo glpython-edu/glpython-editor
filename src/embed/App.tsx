@@ -39,8 +39,8 @@ function createEmbedProject(source: string, files?: GlPythonFile[], mainFile?: s
 // Optional "?features=run,repl,visualize,…" from the macro's features=
 // option: which of the embed's own parts to show (here: the REPL, the
 // visualizer and the → chain export). Without it, everything shows - except
-// "coverage" (after Tests, what no example executed), which a course switches
-// on explicitly.
+// "coverage" (after Tests, what no example executed) and "listtree" (lists
+// that read as a tree drawn as one), which a course switches on explicitly.
 const featureList = (() => {
   const list = new URLSearchParams(window.location.search).get('features')
   return list === null ? null : new Set(list.split(',').map((feature) => feature.trim()))
@@ -204,6 +204,7 @@ export function App() {
           repl: mode === 'eval' && features('repl'),
           export: features('export'),
           coverage: featureList?.has('coverage') ?? false,
+          listTree: featureList?.has('listtree') ?? false,
           emptyOutput: mode !== 'visual',
         }}
       />

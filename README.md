@@ -165,6 +165,39 @@ variables panel. Texts: `visualizerShowFullValue`, `visualizerValueLength`,
 `visualizerFullValueTitle`, `visualizerFullValueCut`, `visualizerCloseFullValue`,
 all optional.
 
+### Lists as trees (`listTree`)
+
+With the capability `listTree` (off by default; the embed's `features=listtree`),
+a list that reads as a tree is drawn as one, below its text: a non-empty list
+whose first element is a string is a node with that label, its other
+elements are its children, a subtree where they read as a tree too, else a
+leaf. `['+', ['var', 'x'], ['f', 1, 2]]`:
+
+```
+        +
+      ╱   ╲
+   var     f
+    │     ╱ ╲
+   'x'   1   2
+```
+
+Labels have no quotes, string leaves do. The rule is generic, so `['Anna', 'Ben']`
+is drawn too; the text stays as it is. Where:
+- **Variables panel:** below the value; a tree wider than the panel
+  (48 characters) has a link «Baum zeigen» (`showTree`) to the full-value
+  dialog instead. The options menu's «Listen als Baum zeigen»
+  (`visualizerListTrees`) switches the trees off and on.
+- **Full-value dialog:** below the value's text.
+- **REPL:** a value that reads as a tree has a «Baum» button (`replShowTree`)
+  next to «Visualisieren»; it shows the tree below the value and hides it
+  again.
+
+A tree of more than 100 nodes, deeper than 10 or containing itself isn't
+drawn; long labels and leaves are shortened in their middle. For screen
+readers each tree is an image described by the list's text. The layout is
+the package's own (`src/treeLayout.ts`, no dependency), in characters of the
+code font, so a tree scales with the text around it.
+
 ### Copying the evaluation as a → chain
 
 The **Copy → chain** item in the toolbar's **⋯ Options** menu copies the evaluation of the statement
@@ -396,8 +429,8 @@ Optional query parameters adapt the embed to a host such as the LiaScript
 macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 (`visualize`) or its → chain export (`export`) unless listed (capabilities
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
-coverage after Tests (capability `coverage`), which a missing `features`
-doesn't; and `size=large` with
+coverage after Tests (capability `coverage`), and `listtree` lists drawn as
+trees (capability `listTree`), which a missing `features` doesn't; and `size=large` with
 `visualizerHeight=<px>` shows bigger code and a visualizer at least that tall.
 
 The UI language is the optional `lang` query parameter (e.g. the LiaScript

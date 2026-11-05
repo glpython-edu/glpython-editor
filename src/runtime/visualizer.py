@@ -180,7 +180,29 @@ def _glpython_describe_for_locals_panel(value):
     return "class"
   if isinstance(value, _glpython_types.ModuleType):
     return "module"
-  return _glpython_safe_repr(value)
+  shown = _glpython_safe_repr(value)
+  _glpython_note_tree(shown, value)
+  return shown
+
+# The trees of the panel's values that read as one (_glpython_tree_of), for
+# "listtree": like the full values, the next recorded step gets them as
+# "trees" ({shown text: index into the trace's "trees"}), each tree stored
+# once per trace.
+_glpython_pending_trees = {}
+_glpython_trees = []
+_glpython_tree_index = {}
+
+def _glpython_note_tree(shown, value):
+  tree = _glpython_tree_of(value)
+  if tree is None:
+    return
+  key = json.dumps(tree)
+  index = _glpython_tree_index.get(key)
+  if index is None:
+    index = len(_glpython_trees)
+    _glpython_trees.append(tree)
+    _glpython_tree_index[key] = index
+  _glpython_pending_trees[shown] = index
 
 # ---------------------------------------------------------------------------
 # Scopes: a simple chain of dict-based frames. Each function call / class body
@@ -311,6 +333,9 @@ def _glpython_append_step(entry):
   if _glpython_pending_abbreviations:
     entry["fullValues"] = dict(_glpython_pending_abbreviations)
     _glpython_pending_abbreviations.clear()
+  if _glpython_pending_trees:
+    entry["trees"] = dict(_glpython_pending_trees)
+    _glpython_pending_trees.clear()
   _glpython_trace_log.append(entry)
 
 def _glpython_record(node, kind, label, value_text=None, func_name="<module>", extra_locals=None, reset_node_ids=None, annotate_node_id=None, annotate_text=None, closes_frame_id=None, force=False, extra=None):
@@ -1651,6 +1676,9 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   _glpython_pending_abbreviations.clear()
   _glpython_full_values.clear()
   _glpython_full_value_index.clear()
+  _glpython_pending_trees.clear()
+  _glpython_trees.clear()
+  _glpython_tree_index.clear()
   _glpython_stdout_len = 0
   _glpython_call_depth = 0
   _glpython_current_func_stack = ["<module>"]
@@ -1749,4 +1777,5 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
     "truncated": truncated,
     "value": value,
     "values": _glpython_full_values,
+    "trees": _glpython_trees,
   })
