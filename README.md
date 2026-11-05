@@ -437,6 +437,20 @@ macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 coverage after Tests (capability `coverage`), and `listtree` lists drawn as
 trees (capability `listTree`), which a missing `features` doesn't; and `size=large` with
 `visualizerHeight=<px>` shows bigger code and a visualizer at least that tall.
+`windowHeight=<px>` is the host window's height, which the iframe can't see:
+the visualizer is at most 80% of it (without it: of the screen's height).
+
+**A steady height.** The embed's height follows its content, so the page
+around it would move with every step. While visualizing, it doesn't: the
+visualizer is as tall as its tallest step from the start, and the console as
+tall as the output at the last step. The workspace draws the likely tallest
+steps once, hidden, and measures them: every step of a short trace, else the
+120 with the most open calls and some spread over the trace. A step taller
+still makes it grow when it comes, and it never shrinks while stepping. A
+step taller than the cap scrolls inside the visualizer, which follows the
+current step. A new visualization, a switch of the mode, and a new width
+start again. This applies to `compact` hosts (the embed); in the IDE the
+visualizer has a fixed height and scrolls already.
 
 The UI language is the optional `lang` query parameter (e.g. the LiaScript
 course's language), else the browser's language, else English; only the

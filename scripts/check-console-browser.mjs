@@ -21,6 +21,9 @@
 // their parent, the parent centred over them. In a narrow embed (420px) a
 // wide tree starts with its root in the middle, shows a hint at each edge
 // where more is hidden, and scrolls with the keyboard.
+// A steady height: while stepping through a visualization the embed keeps
+// one height (the visualizer the tallest step's, at most 80% of the window,
+// the console the last step's output), and the current line stays in view.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -182,6 +185,9 @@ try {
     for (const button of buttons) button.style.display = ''
     return text
   })
+  // A visualization is shown once its steps are measured: until then the
+  // embed draws some steps a second time, hidden, to know their height.
+  const measured = (frame) => frame.locator('.visualizer-view[data-steady-height="done"]').waitFor({ timeout: 30000 })
   const programLine = (frame) => frame.locator('.repl-line--program .repl-input')
   // A REPL input, once the REPL is free again (until then it keeps the text).
   const enterRepl = async (frame, text) => {
@@ -238,6 +244,7 @@ try {
       await page.evaluate((source) => window.send('visualize', source), 'text = input("> ")\nprint(eval(text))\n')
       await answer(frame, '2 * 3')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       console.log('input(): the visualizer asks, then shows the steps: ok')
     } catch (error) {
       failed += 1
@@ -258,6 +265,7 @@ try {
     try {
       await page.evaluate((source) => window.send('visualize', source), 'def notenschnitt(noten):\n    return sum(noten) / len(noten)\n\ndauer = [1, 2, 30]\nx = dauer[0] + dauer[1]\ny = [1, 2, 30][1]\nschnitt = notenschnitt(dauer)\n')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       const seen = { 5: [], 6: [], 7: [] }
       while (!(await stepButton(2).isDisabled())) {
         await stepButton(2).click()
@@ -270,6 +278,8 @@ try {
       console.log('visualizer: a named list indexed in one step: ok')
 
       await page.evaluate((source) => window.send('visualize', source), 'l = list(range(1, 101))\nbaum = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], 3]]\n')
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
       await stepButton(3).click()
       await frame.locator('.locals-row[data-name="baum"]').waitFor({ timeout: 30000 })
       const short = '[1, 2, 3, 4, 5, …, 100]'
@@ -298,6 +308,8 @@ try {
       for (const mode of ['Kasten', 'Ersetzung']) {
         await frame.locator('.visualizer-mode').getByRole('button', { name: mode }).click()
         await page.evaluate((source) => window.send('visualize', source), displays)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await measured(frame)
         await frame.locator('.frame-box--root > .frame-code .frame-line').filter({ hasText: 'baum = ' }).waitFor({ timeout: 30000 })
         if (!(await stepButton(0).isDisabled())) await stepButton(0).click()
         await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 5000 })
@@ -336,6 +348,7 @@ try {
     try {
       await page.evaluate((source) => window.send('visualize', source), 'baum = ["+", ["var", "x"], ["f", 1, 2]]\ngross = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], ["liste", "anna", "ben", "carla", 12345]]]\nnamen = ["Anna", "Ben"]\n')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
       await frame.locator('.locals-row[data-name="namen"]').waitFor({ timeout: 30000 })
       const treeOf = (name) => frame.locator(`.locals-row[data-name="${name}"] .value-tree`)
@@ -500,6 +513,7 @@ try {
       await checkNarrow('the console', frame.locator('.repl-tree .value-tree-scroll'))
       await page.evaluate((source) => window.send('visualize', source), `breit = ${breit}\n`)
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
       await frame.locator('.locals-row[data-name="breit"] .locals-tree-more').click()
       await checkNarrow('the dialog', frame.getByRole('dialog').locator('.value-tree-scroll'))
@@ -507,6 +521,45 @@ try {
     } catch (error) {
       failed += 1
       console.error(`listtree: narrow: ${error.message}`)
+    }
+    await page.close()
+  }
+  // A steady height while stepping, in both modes: a recursion taller than
+  // the cap (windowHeight=900: the visualizer at most 720px) and a loop that
+  // prints. The current line is always in the visualizer's view.
+  for (const [label, mode, source] of [
+    ['steady height: a recursion, Kasten', 'box', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
+    ['steady height: a recursion, Ersetzung', 'substitution', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
+    ['steady height: a loop that prints', 'substitution', 'for i in range(6):\n    print("Zeile", i)\n'],
+  ]) {
+    const page = await openEmbed({}, `?visualizer=${mode}&windowHeight=900`)
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((program) => window.send('visualize', program), source)
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
+      const state = () => frame.locator('.embed-app').evaluate((app) => {
+        const view = app.querySelector('.visualizer-view')
+        const line = view.querySelector('.visual-current-line')
+        const box = view.getBoundingClientRect()
+        const lineBox = line?.getBoundingClientRect()
+        return { height: Math.round(app.getBoundingClientRect().height), view: Math.round(box.height), lineInView: !lineBox || (lineBox.top >= box.top - 1 && lineBox.bottom <= box.bottom + 1) }
+      })
+      const states = [await state()]
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      while (await next.isEnabled()) {
+        await next.click()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        states.push(await state())
+      }
+      assert.ok(states.length > 10, 'some steps')
+      assert.deepEqual([...new Set(states.map((step) => step.height))], [states[0].height], 'one height for every step')
+      assert.ok(Math.max(...states.map((step) => step.view)) <= 720, `the visualizer at most 80% of the window (${Math.max(...states.map((step) => step.view))}px)`)
+      assert.deepEqual(states.map((step, index) => step.lineInView ? null : index).filter((index) => index !== null), [], 'the current line in view')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
     }
     await page.close()
   }

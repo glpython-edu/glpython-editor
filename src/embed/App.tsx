@@ -52,6 +52,13 @@ const features = (feature: string) => featureList === null || featureList.has(fe
 // macro passes 60% of the course window; the iframe follows its content).
 const isLarge = new URLSearchParams(window.location.search).get('size') === 'large'
 const largeVisualizerHeight = Number(new URLSearchParams(window.location.search).get('visualizerHeight')) || null
+// "&windowHeight=900": the course window's height (the macro passes it; the
+// iframe can't see it). The visualizer is at most 80% of it - a taller step
+// scrolls inside - and at least as tall as "large" asks for. Without it
+// (an older macro), the screen's height stands in for the window's.
+const VISUALIZER_WINDOW_SHARE = 0.8
+const windowHeight = Number(new URLSearchParams(window.location.search).get('windowHeight')) || window.screen.availHeight
+const visualizerMaxHeight = Math.max(Math.round(windowHeight * VISUALIZER_WINDOW_SHARE), isLarge ? largeVisualizerHeight ?? 0 : 0)
 
 function visualizerModeFromLocation(): VisualizerMode | undefined {
   const mode = new URLSearchParams(window.location.search).get('visualizer')
@@ -173,7 +180,7 @@ export function App() {
   return (
     <main
       className={`embed-app embed-app--${mode}${isLarge ? ' embed-app--large' : ''}`}
-      style={isLarge && largeVisualizerHeight ? { '--glp-large-visualizer-height': `${largeVisualizerHeight}px` } as CSSProperties : undefined}
+      style={{ '--glp-visualizer-max-height': `${visualizerMaxHeight}px`, ...(isLarge && largeVisualizerHeight ? { '--glp-large-visualizer-height': `${largeVisualizerHeight}px` } : {}) } as CSSProperties}
       data-input-available={typeof SharedArrayBuffer !== 'undefined'}
       ref={rootRef}
     >
