@@ -171,6 +171,14 @@
 
 .visualizer-view { min-height: 0; flex: 1; overflow: auto; container-type: inline-size; padding: 12px 0; background: var(--glp-surface); color: var(--glp-text); font-family: var(--glp-font-code); font-size: 15px; line-height: 1.6; }
 .visualizer-canvas { position: relative; }
+/* Steps drawn only to measure their height (compact hosts, see
+   steadyHeightCandidates): laid out at the canvas's width, never shown. */
+.visualizer-measure { position: absolute; top: 0; left: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+/* The console while visualizing in a compact host: as tall as the output at
+   the last step from the start, the current output on top of it. */
+.visual-output-steady { display: grid; }
+.visual-output-steady > * { grid-area: 1 / 1; }
+.visual-output-final { visibility: hidden; }
 .visualizer-connectors { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 2; opacity: .55; }
 .visualizer-connectors path { fill: none; stroke: var(--glp-text-muted); stroke-width: 1.5; }
 .visualizer-connectors marker path { fill: var(--glp-text-muted); stroke: none; }

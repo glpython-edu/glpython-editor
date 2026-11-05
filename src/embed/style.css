@@ -75,9 +75,15 @@ body,
 }
 
 /* The visualizer is as tall as its content, with a small minimum, so a short
-   program leaves no empty area ("large" below sets its own minimum). */
+   program leaves no empty area ("large" below sets its own minimum) - from
+   the start as tall as its tallest step, and at most 80% of the course
+   window (App.tsx sets the variable); a taller step scrolls inside it. */
 .embed-app .editor-panel {
   min-height: 140px;
+}
+
+.embed-app .visualizer-view {
+  max-height: var(--glp-visualizer-max-height, none);
 }
 
 /* The console is as tall as its content too (the host's iframe follows it),

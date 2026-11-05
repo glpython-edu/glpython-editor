@@ -21,6 +21,9 @@
 // their parent, the parent centred over them. In a narrow embed (420px) a
 // wide tree starts with its root in the middle, shows a hint at each edge
 // where more is hidden, and scrolls with the keyboard.
+// A steady height: while stepping through a visualization the embed keeps
+// one height (the visualizer the tallest step's, at most 80% of the window,
+// the console the last step's output), and the current line stays in view.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -507,6 +510,45 @@ try {
     } catch (error) {
       failed += 1
       console.error(`listtree: narrow: ${error.message}`)
+    }
+    await page.close()
+  }
+  // A steady height while stepping, in both modes: a recursion taller than
+  // the cap (windowHeight=900: the visualizer at most 720px) and a loop that
+  // prints. The current line is always in the visualizer's view.
+  for (const [label, mode, source] of [
+    ['steady height: a recursion, Kasten', 'box', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
+    ['steady height: a recursion, Ersetzung', 'substitution', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
+    ['steady height: a loop that prints', 'substitution', 'for i in range(6):\n    print("Zeile", i)\n'],
+  ]) {
+    const page = await openEmbed({}, `?visualizer=${mode}&windowHeight=900`)
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((program) => window.send('visualize', program), source)
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await frame.locator('.visualizer-measure').waitFor({ state: 'detached', timeout: 30000 })
+      const state = () => frame.locator('.embed-app').evaluate((app) => {
+        const view = app.querySelector('.visualizer-view')
+        const line = view.querySelector('.visual-current-line')
+        const box = view.getBoundingClientRect()
+        const lineBox = line?.getBoundingClientRect()
+        return { height: Math.round(app.getBoundingClientRect().height), view: Math.round(box.height), lineInView: !lineBox || (lineBox.top >= box.top - 1 && lineBox.bottom <= box.bottom + 1) }
+      })
+      const states = [await state()]
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      while (await next.isEnabled()) {
+        await next.click()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        states.push(await state())
+      }
+      assert.ok(states.length > 10, 'some steps')
+      assert.deepEqual([...new Set(states.map((step) => step.height))], [states[0].height], 'one height for every step')
+      assert.ok(Math.max(...states.map((step) => step.view)) <= 720, `the visualizer at most 80% of the window (${Math.max(...states.map((step) => step.view))}px)`)
+      assert.deepEqual(states.map((step, index) => step.lineInView ? null : index).filter((index) => index !== null), [], 'the current line in view')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
     }
     await page.close()
   }

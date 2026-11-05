@@ -603,6 +603,147 @@ type FrameScope =
 // message if the call fails, since inline text has no lines of its own.
 type InlineHost = { frameId: number; path: string; line: number; endLine: number }
 
+// What the visualizer shows at one step, apart from the trace itself: the
+// open boxes (and the one about to open), what the next step declares, and
+// where an inline call is drawn. The workspace computes it for the current
+// step; SteadyHeightMeasure for other steps, to know their height.
+type PendingCall = { openFrame: OpenFrame; argSources: string[] }
+type StepView = {
+  currentStep: TraceStep | null
+  nextStep: TraceStep | null
+  openFrames: Map<number, OpenFrame>
+  pendingCall: PendingCall | null
+  framesForRender: Map<number, OpenFrame>
+  pendingCallLocals: { frameId: number; paramNames: string[] } | null
+  collapsedCalls: CollapsedCalls | null
+  declareTarget: { frameId: number; varName: string } | null
+  isAtErrorStep: boolean
+  isAtLastStep: boolean
+  activeHost: InlineHost | null
+  errorHost: InlineHost | null
+}
+
+// When the pending next step is a plain "x = ..." assignment or a
+// "def f(...):" that's about to bind a name this frame doesn't have yet,
+// which frame and name it's about to create (see Frame's `declareTarget`).
+function declareTargetFor(steps: TraceStep[], currentStep: TraceStep | null, nextStep: TraceStep | null, astIndexByFile: Map<string, Map<number, AstNode>>) {
+  if (!nextStep || nextStep.kind !== 'exec') return null
+  const node = astIndexByFile.get(nextStep.path)?.get(nextStep.nodeId)
+  if (!node) return null
+  let varName: string | null = null
+  if (node.type === 'FunctionDef') {
+    varName = node.summary || null
+  } else if (node.type === 'Assign') {
+    const targets = node.fields.targets
+    const onlyTarget = Array.isArray(targets) && targets.length === 1 ? targets[0] : null
+    if (onlyTarget && typeof onlyTarget === 'object' && (onlyTarget as AstNode).type === 'Name') varName = (onlyTarget as AstNode).summary
+  }
+  if (!varName) return null
+  const frameId = nextStep.frameId
+  const currentLocals = buildLocalsUpTo(steps, currentStep?.step ?? -1, frameId)
+  if (varName in currentLocals) return null
+  return { frameId, varName }
+}
+
+// When the pending next step is a "call-enter", the callee frame's
+// OpenFrame one step early (see `framesForRender` in the workspace).
+function pendingCallFor(nextStep: TraceStep | null, substitutionMode: boolean): PendingCall | null {
+  if (!nextStep || nextStep.kind !== 'call-enter') return null
+  // A call shown as its return expression must not be replaced one step early.
+  if (substitutionMode && nextStep.shortForm) return null
+  if (nextStep.funcDefNodeId === null || nextStep.funcDefPath === null) return null
+  const openFrame: OpenFrame = {
+    frameId: nextStep.frameId,
+    parentFrameId: nextStep.parentFrameId ?? 0,
+    funcName: nextStep.func,
+    anchorPath: nextStep.path,
+    anchorNodeId: nextStep.nodeId,
+    funcDefPath: nextStep.funcDefPath,
+    funcDefNodeId: nextStep.funcDefNodeId,
+    paramAnnotations: nextStep.paramAnnotations,
+    shortForm: nextStep.shortForm ?? null,
+  }
+  return { openFrame, argSources: nextStep.argSources }
+}
+
+function framesWithPendingCall(openFrames: Map<number, OpenFrame>, pendingCall: PendingCall | null) {
+  if (!pendingCall) return openFrames
+  const merged = new Map(openFrames)
+  merged.set(pendingCall.openFrame.frameId, pendingCall.openFrame)
+  return merged
+}
+
+// Inline calls take no extra width, so only boxes count towards collapsing.
+function collapsedCallsOf(framesForRender: Map<number, OpenFrame>, pendingCall: PendingCall | null, substitutionMode: boolean) {
+  return collapseDeepCallChain(substitutionMode ? new Map([...framesForRender].filter(([, frame]) => !frame.shortForm)) : framesForRender, pendingCall ? 2 : 1)
+}
+
+// In the substitution mode, the line where an inline call (and the inline
+// calls around it) is drawn.
+function inlineHostIn(framesForRender: Map<number, OpenFrame>, astIndexByFile: Map<string, Map<number, AstNode>>, substitutionMode: boolean, frameId: number | undefined): InlineHost | null {
+  if (!substitutionMode || frameId === undefined) return null
+  let frame = framesForRender.get(frameId)
+  if (!frame?.shortForm) return null
+  for (let parent = framesForRender.get(frame.parentFrameId); parent?.shortForm; parent = framesForRender.get(frame.parentFrameId)) frame = parent
+  const anchor = astIndexByFile.get(frame.anchorPath)?.get(frame.anchorNodeId)
+  if (anchor?.line === undefined) return null
+  return { frameId: frame.parentFrameId, path: frame.anchorPath, line: anchor.line, endLine: anchor.endLine ?? anchor.line }
+}
+
+// How many steps the embed measures ahead, and how many at a time (one
+// batch per frame, so a long trace doesn't block the page).
+const STEADY_HEIGHT_MEASURES = 120
+const STEADY_HEIGHT_BATCH = 12
+
+// The steps (indices into `steps`, -1 before the first) most likely to be
+// the tallest, tallest first: every step of a short trace, else those with
+// the most open calls (also the one about to open), later ones first, then
+// some spread over the trace and its last step. Only their height counts.
+function steadyHeightCandidates(trace: TraceStep[], steps: TraceStep[]): number[] {
+  const depthAt = new Map<number, number>()
+  let depth = 0
+  for (const step of trace) {
+    if (step.kind === 'call-enter') depth += 1
+    if (step.closesFrameId !== null && step.closesFrameId !== undefined) depth -= 1
+    depthAt.set(step.step, depth)
+  }
+  const depthOf = (index: number) => Math.max(index < 0 ? 0 : depthAt.get(steps[index].step) ?? 0, index + 1 < steps.length ? depthAt.get(steps[index + 1].step) ?? 0 : 0)
+  const all = Array.from({ length: steps.length + 1 }, (_, index) => index - 1)
+  const byDepth = [...all].sort((a, b) => depthOf(b) - depthOf(a) || b - a)
+  if (all.length <= STEADY_HEIGHT_MEASURES) return byDepth
+  const chosen = new Set(byDepth.slice(0, Math.round(STEADY_HEIGHT_MEASURES * 2 / 3)))
+  chosen.add(steps.length - 1)
+  const spread = STEADY_HEIGHT_MEASURES - chosen.size
+  for (let index = 0; index < spread; index++) chosen.add(Math.floor((index * steps.length) / spread))
+  return [...chosen].sort((a, b) => depthOf(b) - depthOf(a) || b - a)
+}
+
+// The view at the visualizer's step `index` (of `steps`, the mode's list).
+function stepViewAt(trace: TraceStep[], steps: TraceStep[], index: number, astIndexByFile: Map<string, Map<number, AstNode>>, substitutionMode: boolean): StepView {
+  const currentStep = steps[index] ?? null
+  const nextStep = steps[index + 1] ?? null
+  const lastStep = steps[steps.length - 1]
+  const errorStep = lastStep?.kind === 'error' ? lastStep : null
+  const isAtErrorStep = errorStep !== null && currentStep === errorStep
+  const openFrames = computeOpenFramesUpTo(trace, currentStep?.step ?? -1)
+  const pendingCall = pendingCallFor(nextStep, substitutionMode)
+  const framesForRender = framesWithPendingCall(openFrames, pendingCall)
+  return {
+    currentStep,
+    nextStep,
+    openFrames,
+    pendingCall,
+    framesForRender,
+    pendingCallLocals: pendingCall ? { frameId: pendingCall.openFrame.frameId, paramNames: pendingCall.argSources } : null,
+    collapsedCalls: collapsedCallsOf(framesForRender, pendingCall, substitutionMode),
+    declareTarget: declareTargetFor(steps, currentStep, nextStep, astIndexByFile),
+    isAtErrorStep,
+    isAtLastStep: steps.length > 0 && index === steps.length - 1,
+    activeHost: inlineHostIn(framesForRender, astIndexByFile, substitutionMode, currentStep?.frameId),
+    errorHost: isAtErrorStep && errorStep ? inlineHostIn(framesForRender, astIndexByFile, substitutionMode, errorStep.frameId) : null,
+  }
+}
+
 type FrameProps = {
   frameId: number
   path: string
@@ -1580,6 +1721,10 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const errorTraceStep = lastTraceStep?.kind === 'error' ? lastTraceStep : null
   const isAtErrorStep = errorTraceStep !== null && currentTraceStep === errorTraceStep
   const visualStdout = visualTrace?.output.slice(0, currentTraceStep?.stdoutLen ?? 0) ?? ''
+  // What the console shows at the last step: in a host whose height follows
+  // the content, the console keeps that height from the start (invisibly,
+  // see .visual-output-steady), so it doesn't grow with every print.
+  const visualFinalOutput = visualTrace ? `${visualTrace.output}${visualTrace.error && errorTraceStep ? `${visualTrace.output && !visualTrace.output.endsWith('\n') ? '\n' : ''}${visualTrace.error}` : ''}` || t.noOutput : ''
 
   const astIndexByFile = useMemo(() => {
     const map = new Map<string, ReturnType<typeof indexAstNodes>>()
@@ -1607,24 +1752,10 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // `declareTarget` prop), with an arrow drawn from the upcoming
   // value/def in the code into that placeholder instead of the other way
   // around.
-  const nextStepDeclareTarget = useMemo(() => {
-    if (!nextTraceStep || nextTraceStep.kind !== 'exec') return null
-    const node = astIndexByFile.get(nextTraceStep.path)?.get(nextTraceStep.nodeId)
-    if (!node) return null
-    let varName: string | null = null
-    if (node.type === 'FunctionDef') {
-      varName = node.summary || null
-    } else if (node.type === 'Assign') {
-      const targets = node.fields.targets
-      const onlyTarget = Array.isArray(targets) && targets.length === 1 ? targets[0] : null
-      if (onlyTarget && typeof onlyTarget === 'object' && (onlyTarget as AstNode).type === 'Name') varName = (onlyTarget as AstNode).summary
-    }
-    if (!varName) return null
-    const frameId = nextTraceStep.frameId
-    const currentLocals = buildLocalsUpTo(visualTraceSteps, currentTraceStep?.step ?? -1, frameId)
-    if (varName in currentLocals) return null
-    return { frameId, varName }
-  }, [nextTraceStep, astIndexByFile, visualTraceSteps, currentTraceStep])
+  const nextStepDeclareTarget = useMemo(
+    () => declareTargetFor(visualTraceSteps, currentTraceStep, nextTraceStep, astIndexByFile),
+    [nextTraceStep, astIndexByFile, visualTraceSteps, currentTraceStep],
+  )
 
   // When the pending next step is a "call-enter" (a user-defined function
   // about to start running), synthesize that callee frame's OpenFrame
@@ -1641,24 +1772,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // each bound parameter's name, in parameter-def order), used to seed
   // this frame's own parameters as valueless placeholder rows
   // (`pendingCallLocals`).
-  const nextStepPendingCall = useMemo(() => {
-    if (!nextTraceStep || nextTraceStep.kind !== 'call-enter') return null
-    // A call shown as its return expression must not be replaced one step early.
-    if (substitutionMode && nextTraceStep.shortForm) return null
-    if (nextTraceStep.funcDefNodeId === null || nextTraceStep.funcDefPath === null) return null
-    const openFrame: OpenFrame = {
-      frameId: nextTraceStep.frameId,
-      parentFrameId: nextTraceStep.parentFrameId ?? 0,
-      funcName: nextTraceStep.func,
-      anchorPath: nextTraceStep.path,
-      anchorNodeId: nextTraceStep.nodeId,
-      funcDefPath: nextTraceStep.funcDefPath,
-      funcDefNodeId: nextTraceStep.funcDefNodeId,
-      paramAnnotations: nextTraceStep.paramAnnotations,
-      shortForm: nextTraceStep.shortForm ?? null,
-    }
-    return { openFrame, argSources: nextTraceStep.argSources }
-  }, [nextTraceStep, substitutionMode])
+  const nextStepPendingCall = useMemo(() => pendingCallFor(nextTraceStep, substitutionMode), [nextTraceStep, substitutionMode])
 
   // When the pending next step is a "call-pending" (a user-defined call
   // whose callee and arguments are already resolved - the call site reads
@@ -1789,36 +1903,18 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // callee frame from `nextStepPendingCall` above - this is what actually
   // gets handed down to <Frame>, so that pending frame renders inline at
   // its call site one step early, exactly like any other already-open call.
-  const framesForRender = useMemo(() => {
-    if (!nextStepPendingCall) return openFrames
-    const merged = new Map(openFrames)
-    merged.set(nextStepPendingCall.openFrame.frameId, nextStepPendingCall.openFrame)
-    return merged
-  }, [openFrames, nextStepPendingCall])
+  const framesForRender = useMemo(() => framesWithPendingCall(openFrames, nextStepPendingCall), [openFrames, nextStepPendingCall])
 
   const pendingCallLocals = useMemo(() => nextStepPendingCall
     ? { frameId: nextStepPendingCall.openFrame.frameId, paramNames: nextStepPendingCall.argSources }
     : null, [nextStepPendingCall])
 
-  // Inline calls take no extra width, so only boxes count towards collapsing.
   const collapsedCalls = useMemo(
-    () => collapseDeepCallChain(substitutionMode ? new Map([...framesForRender].filter(([, frame]) => !frame.shortForm)) : framesForRender, nextStepPendingCall ? 2 : 1),
+    () => collapsedCallsOf(framesForRender, nextStepPendingCall, substitutionMode),
     [framesForRender, nextStepPendingCall, substitutionMode],
   )
-  const collapsedCallsLabel = collapsedCalls
-    ? t.visualizerCollapsedCalls?.(collapsedCalls.hiddenCount, collapsedCalls.callText)
-      ?? `\u2026 ${collapsedCalls.hiddenCount} more calls${collapsedCalls.callText ? ` of ${collapsedCalls.callText}` : ''} \u2026`
-    : ''
 
-  const inlineHostOf = (frameId: number | undefined): InlineHost | null => {
-    if (!substitutionMode || frameId === undefined) return null
-    let frame = framesForRender.get(frameId)
-    if (!frame?.shortForm) return null
-    for (let parent = framesForRender.get(frame.parentFrameId); parent?.shortForm; parent = framesForRender.get(frame.parentFrameId)) frame = parent
-    const anchor = astIndexByFile.get(frame.anchorPath)?.get(frame.anchorNodeId)
-    if (anchor?.line === undefined) return null
-    return { frameId: frame.parentFrameId, path: frame.anchorPath, line: anchor.line, endLine: anchor.endLine ?? anchor.line }
-  }
+  const inlineHostOf = (frameId: number | undefined) => inlineHostIn(framesForRender, astIndexByFile, substitutionMode, frameId)
   // The visualizer's root file: a visualized REPL input's pseudo-file, or the
   // main file.
   const chainRootPath = visualRootPath ?? project.mainFile
@@ -1855,9 +1951,9 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // At the last step of a visualized failing doctest example: what doctest
   // got and what the example expected, as the texts doctest compared.
   const isAtLastStep = visualTraceSteps.length > 0 && clampedStepIndex === visualTraceSteps.length - 1
-  const finalNote = isAtLastStep && exampleExpectation && currentTraceStep
+  const finalNoteAt = (view: StepView) => view.isAtLastStep && exampleExpectation && view.currentStep
     ? {
-        line: currentTraceStep.frameId === 0 ? currentTraceStep.endLine : 1,
+        line: view.currentStep.frameId === 0 ? view.currentStep.endLine : 1,
         text: (t.exampleGotExpected ?? ((got: string, want: string) => `Got: ${got} \u00b7 Expected: ${want}`))(
           exampleExpectation.got.replace(/\n$/, '') || t.noOutput,
           exampleExpectation.want.replace(/\n$/, ''),
@@ -1866,6 +1962,15 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     : null
   const activeHost = inlineHostOf(currentTraceStep?.frameId)
   const errorHost = isAtErrorStep ? inlineHostOf(errorTraceStep.frameId) : null
+  const currentStepView: StepView = { currentStep: currentTraceStep, nextStep: nextTraceStep, openFrames, pendingCall: nextStepPendingCall, framesForRender, pendingCallLocals, collapsedCalls, declareTarget: nextStepDeclareTarget, isAtErrorStep, isAtLastStep, activeHost, errorHost }
+  // The module's frame at a step, with the boxes and inline calls inside it.
+  const rootFrame = (view: StepView) => {
+    const collapsedLabel = view.collapsedCalls
+      ? t.visualizerCollapsedCalls?.(view.collapsedCalls.hiddenCount, view.collapsedCalls.callText)
+        ?? `\u2026 ${view.collapsedCalls.hiddenCount} more calls${view.collapsedCalls.callText ? ` of ${view.collapsedCalls.callText}` : ''} \u2026`
+      : ''
+    return <Frame frameId={0} path={visualRootPath ?? activeFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={t.visualizerBoxHint ?? 'The box shows which return is executed.'} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
+  }
   const changeVisualizerMode = (mode: VisualizerMode) => {
     if (mode === visualizerMode) return
     // Stay at the same point of the program: the last step of the new mode's
@@ -2221,28 +2326,59 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // While stepping through one visualization the canvas only grows: a call
   // box that opens makes it taller, but closing it again doesn't shrink it,
   // so a host whose height follows the content (the embed) doesn't jump up
-  // and down with every box. A new trace or mode, and a new width (content
-  // that wrapped while the host was still laying out), starts from the
-  // content again.
+  // and down with every box. In such a host (`compact`) it is as tall as the
+  // tallest step from the start: the likely tallest steps are drawn once,
+  // hidden, and measured (see steadyHeightCandidates), and the canvas keeps
+  // the tallest of them; a step taller still makes it grow when it comes.
+  // The host caps the visualizer's height (the embed: at most 80% of the
+  // course window), so a taller canvas scrolls inside it, following the
+  // current step (see above). A new trace or mode, and a new width (content
+  // wraps differently), starts again.
+  const steadyHeightRef = useRef(0)
+  const [steadyMeasure, setSteadyMeasure] = useState<{ width: number; pending: number[] }>({ width: 0, pending: [] })
+  const raiseSteadyHeight = (height: number) => {
+    const canvas = visualizerCanvasRef.current
+    if (!canvas || height <= steadyHeightRef.current) return
+    steadyHeightRef.current = height
+    canvas.style.minHeight = `${height}px`
+  }
   useEffect(() => {
     const canvas = visualizerCanvasRef.current
     if (!isVisualizing || !canvas) return
-    let tallest = 0
     let width = -1
+    steadyHeightRef.current = 0
     canvas.style.minHeight = ''
     const observer = new ResizeObserver(() => {
       if (canvas.offsetWidth !== width) {
         width = canvas.offsetWidth
-        tallest = 0
+        steadyHeightRef.current = 0
         canvas.style.minHeight = ''
+        if (compact && visualTrace) setSteadyMeasure({ width, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
       }
-      if (canvas.offsetHeight <= tallest) return
-      tallest = canvas.offsetHeight
-      canvas.style.minHeight = `${tallest}px`
+      raiseSteadyHeight(canvas.offsetHeight)
     })
     observer.observe(canvas)
-    return () => observer.disconnect()
-  }, [isVisualizing, visualTrace, substitutionMode])
+    return () => {
+      observer.disconnect()
+      setSteadyMeasure({ width: 0, pending: [] })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisualizing, visualTrace, substitutionMode, compact])
+  const steadyMeasureRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const container = steadyMeasureRef.current
+    if (!container || steadyMeasure.pending.length === 0) return
+    for (const step of container.querySelectorAll<HTMLElement>('[data-measure-step]')) raiseSteadyHeight(step.offsetHeight)
+    const frame = requestAnimationFrame(() => setSteadyMeasure((measure) => ({ ...measure, pending: measure.pending.slice(STEADY_HEIGHT_BATCH) })))
+    return () => cancelAnimationFrame(frame)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steadyMeasure])
+  const steadyMeasureNode = steadyMeasure.pending.length > 0 && visualTrace ? <div className="visualizer-measure" ref={steadyMeasureRef} aria-hidden="true" inert style={{ width: steadyMeasure.width }}>{steadyMeasure.pending.slice(0, STEADY_HEIGHT_BATCH).map((index) => {
+    const view = stepViewAt(visualTrace.trace, visualTraceSteps, index, astIndexByFile, substitutionMode)
+    const step = view.currentStep?.step ?? -1
+    const access: FullValueAccess = { values: fullValuesUpTo(visualTrace.trace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace.trace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
+    return <div key={index} className="visualizer-canvas" data-measure-step={index}><FullValueContext.Provider value={access}>{rootFrame(view)}</FullValueContext.Provider></div>
+  })}</div> : null
 
   const visualStepBack = () => setVisualStepIndex((index) => Math.max(-1, index - 1))
   const visualStepForward = () => setVisualStepIndex((index) => Math.min(visualTraceSteps.length - 1, index + 1))
@@ -2259,8 +2395,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const visualizerBarNode = <div className="visualizer-bar">{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={!substitutionMode} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={substitutionMode} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button></div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}</div>
-  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-view${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><Frame frameId={0} path={visualRootPath ?? activeFile} scope={{ kind: 'module' }} openFrames={framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={currentTraceStep?.step ?? -1} currentStep={currentTraceStep} nextStep={nextTraceStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={nextStepDeclareTarget} pendingCallLocals={pendingCallLocals} errorStep={isAtErrorStep ? errorTraceStep : null} collapsedCalls={collapsedCalls} collapsedCallsLabel={collapsedCallsLabel} substitutionMode={substitutionMode} boxHint={t.visualizerBoxHint ?? 'The box shows which return is executed.'} insideBox={false} activeHost={activeHost} errorHost={errorHost} finalNote={finalNote} errorHint={isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} /></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div></div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} />}</div>
-  const consoleNode = <>{!hideOutputPanel && <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span>{runtimeState !== 'ready' && <span className={`runtime-badge${runtimeState === 'failed' ? ' runtime-badge--failed' : ''}`}><span className="pulse" /> {t.pyodideRuntime}</span>}</div>{Object.keys(project.files).length > 1 && <span className="output-hint">{t.runsFile(project.mainFile)}</span>}</div><div className="console" ref={outputRef} role="log" onScroll={(event) => { const element = event.currentTarget; consoleAtBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24 }}>{isVisualizing ? <pre>{isAtErrorStep ? <>{visualStdout && !visualStdout.endsWith('\n') ? `${visualStdout}\n` : visualStdout}<span className="output-error">{visualTrace?.error}</span></> : visualStdout || t.noOutput}</pre> : <><pre>{output}<ErrorHintNote hint={outputErrorHint} t={t} /></pre>{consoleEntries.map((entry) => entry.kind === 'tests' ? <div key={entry.id} data-console-entry={entry.id}><TestReportView report={entry.report} t={t} onVisualizeExample={workspaceCapabilities.visualization ? visualizeExample : null} /></div> : entry.kind === 'note' ? <p key={entry.id} className="console-note" role="note" data-console-entry={entry.id}>{entry.text}</p> : <pre key={entry.id} data-console-entry={entry.id}><ReplTranscriptEntry listTree={workspaceCapabilities.listTree} entry={entry} definitionHint={t.replDefinitionHint ?? 'Definitions belong in the file.'} t={t} onVisualize={workspaceCapabilities.visualization && entry.result && !entry.result.unparsed && !entry.result.untraced && !entry.stale ? () => visualizeReplEntry(entry.id) : undefined} busy={isBusy} /></pre>)}</>}{answeredInputLines.length > 0 && <pre className="console-answered">{answeredInputLines.join('\n')}</pre>}</div>{(workspaceCapabilities.repl || programInput) && <form className={`repl-line${programInput ? ' repl-line--program' : ''}`} onSubmit={(event) => { event.preventDefault(); if (programInput) respondToInput(false); else submitRepl() }}><span className="repl-prompt" aria-hidden="true">{programInput ? inputRequest : '>>>'}</span><input ref={inputFieldRef} className="repl-input" value={programInput ? inputValue : replInput} onChange={(event) => { if (programInput) { setInputValue(event.target.value) } else { setReplInput(event.target.value); setReplHistoryIndex(null) } }} onKeyDown={handleReplKeyDown} aria-label={programInput ? `${t.programInputLabel ?? 'Input for the program'}${inputRequest ? `: ${inputRequest}` : ''}` : t.replInputLabel ?? 'Python input'} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" enterKeyHint="send" /></form>}</section>}</>
+  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-view${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerScrollRef}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}>{rootFrame(currentStepView)}</FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div> : <Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} />}</div>
+  const consoleNode = <>{!hideOutputPanel && <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span>{runtimeState !== 'ready' && <span className={`runtime-badge${runtimeState === 'failed' ? ' runtime-badge--failed' : ''}`}><span className="pulse" /> {t.pyodideRuntime}</span>}</div>{Object.keys(project.files).length > 1 && <span className="output-hint">{t.runsFile(project.mainFile)}</span>}</div><div className="console" ref={outputRef} role="log" onScroll={(event) => { const element = event.currentTarget; consoleAtBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24 }}>{isVisualizing ? <pre className={compact ? 'visual-output-steady' : undefined}><span>{isAtErrorStep ? <>{visualStdout && !visualStdout.endsWith('\n') ? `${visualStdout}\n` : visualStdout}<span className="output-error">{visualTrace?.error}</span></> : visualStdout || t.noOutput}</span>{compact && <span className="visual-output-final" aria-hidden="true">{visualFinalOutput}</span>}</pre> : <><pre>{output}<ErrorHintNote hint={outputErrorHint} t={t} /></pre>{consoleEntries.map((entry) => entry.kind === 'tests' ? <div key={entry.id} data-console-entry={entry.id}><TestReportView report={entry.report} t={t} onVisualizeExample={workspaceCapabilities.visualization ? visualizeExample : null} /></div> : entry.kind === 'note' ? <p key={entry.id} className="console-note" role="note" data-console-entry={entry.id}>{entry.text}</p> : <pre key={entry.id} data-console-entry={entry.id}><ReplTranscriptEntry listTree={workspaceCapabilities.listTree} entry={entry} definitionHint={t.replDefinitionHint ?? 'Definitions belong in the file.'} t={t} onVisualize={workspaceCapabilities.visualization && entry.result && !entry.result.unparsed && !entry.result.untraced && !entry.stale ? () => visualizeReplEntry(entry.id) : undefined} busy={isBusy} /></pre>)}</>}{answeredInputLines.length > 0 && <pre className="console-answered">{answeredInputLines.join('\n')}</pre>}</div>{(workspaceCapabilities.repl || programInput) && <form className={`repl-line${programInput ? ' repl-line--program' : ''}`} onSubmit={(event) => { event.preventDefault(); if (programInput) respondToInput(false); else submitRepl() }}><span className="repl-prompt" aria-hidden="true">{programInput ? inputRequest : '>>>'}</span><input ref={inputFieldRef} className="repl-input" value={programInput ? inputValue : replInput} onChange={(event) => { if (programInput) { setInputValue(event.target.value) } else { setReplInput(event.target.value); setReplHistoryIndex(null) } }} onKeyDown={handleReplKeyDown} aria-label={programInput ? `${t.programInputLabel ?? 'Input for the program'}${inputRequest ? `: ${inputRequest}` : ''}` : t.replInputLabel ?? 'Python input'} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" enterKeyHint="send" /></form>}</section>}</>
   // In the stacked layout the graphics show only while the program draws -
   // for a visualization: if it draws at all, so the panel doesn't appear in
   // the middle of stepping. Its ✕ hides it until the next drawing.
