@@ -110,10 +110,17 @@
 .full-value-close { margin-left: auto; }
 .full-value-text { min-height: 0; margin: 0; padding: 10px 12px; overflow: auto; color: var(--glp-text); background: var(--glp-surface); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); font: 14px/1.6 var(--glp-font-code); white-space: pre-wrap; overflow-wrap: anywhere; }
 .full-value-cut { margin: 0; color: var(--glp-text-muted); font-size: 13px; }
-.full-value-tree { flex-shrink: 0; min-width: 0; max-height: 50vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--glp-border); border-radius: var(--glp-radius); font-size: 14px; }
+.full-value-tree { flex-shrink: 0; min-width: 0; max-height: 50vh; overflow-y: auto; padding: 10px 12px; border: 1px solid var(--glp-border); border-radius: var(--glp-radius); font-size: 14px; }
 
 /* A list drawn as a tree (TreeView, listtree): positions in characters of
    the code font and in em, so the tree scales with its font size. */
+.value-tree-frame { position: relative; display: block; min-width: 0; max-width: 100%; }
+.value-tree-scroll { display: block; overflow-x: auto; overflow-y: hidden; border-radius: var(--glp-radius); }
+.value-tree-scroll:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: -2px; }
+/* At an edge where more of a wide tree is hidden. */
+.value-tree-hint { position: absolute; top: 50%; display: flex; align-items: center; justify-content: center; width: 20px; height: 28px; margin-top: -14px; color: var(--glp-accent); background: var(--glp-bg); border: 1px solid var(--glp-border-control); border-radius: var(--glp-radius); font: 600 16px/1 var(--glp-font-ui); pointer-events: none; }
+.value-tree-hint--left { left: 0; }
+.value-tree-hint--right { right: 0; }
 .value-tree { position: relative; display: block; flex-shrink: 0; font-family: var(--glp-font-code); line-height: 1.6em; }
 .value-tree-edges { position: absolute; top: 0; left: 0; overflow: visible; }
 .value-tree-edges line { stroke: var(--glp-border-control); stroke-width: 1px; vector-effect: non-scaling-stroke; }
@@ -223,7 +230,7 @@
 .visual-value-more-text { text-decoration: underline dotted; text-underline-offset: 3px; }
 .visual-value-more:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: 1px; }
 .locals-value-length { display: block; color: var(--glp-text-muted); font-size: 12px; }
-.locals-tree { flex-basis: 100%; max-width: 100%; overflow-x: auto; padding: 6px 0; }
+.locals-tree { flex-basis: 100%; min-width: 0; max-width: 100%; padding: 6px 0; }
 .locals-tree-more { flex-basis: auto; padding: 0; color: var(--glp-accent); font: 600 12px/1.6 var(--glp-font-ui); }
 .visualizer-animated .visual-substituted-value { animation: visual-return-fly-in .4s ease-out backwards; }
 @keyframes visual-return-fly-in {
@@ -277,11 +284,10 @@
 .repl-entry-visualize, .repl-entry-tree { flex-shrink: 0; margin-left: auto; padding: 0 4px; border: 0; border-radius: var(--glp-radius); color: var(--glp-accent); background: transparent; cursor: pointer; font: 600 12px/1.6 var(--glp-font-ui); }
 .repl-entry-visualize:hover:not(:disabled), .repl-entry-tree:hover { text-decoration: underline; }
 .repl-entry-tree + .repl-entry-visualize { margin-left: 0; }
-.repl-entry-tree[aria-pressed="true"] { text-decoration: underline; }
 .repl-entry-visualize:disabled { color: var(--glp-text-muted); cursor: not-allowed; }
 .repl-note { color: var(--glp-text-muted); font: italic 13px/1.5 var(--glp-font-ui); white-space: normal; }
 .repl-value { color: var(--glp-text); }
-.repl-tree { display: block; max-width: 100%; overflow-x: auto; padding: 4px 0 6px; }
+.repl-tree { display: block; min-width: 0; max-width: 100%; padding: 4px 0 6px; }
 .repl-hint { color: var(--glp-warning); font-style: italic; }
 
 .repl-line { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--glp-surface); border-top: 1px solid var(--glp-border); }

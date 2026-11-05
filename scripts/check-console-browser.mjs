@@ -17,7 +17,10 @@
 // The run file is the module __main__ (P37), also in the REPL after it.
 // With listtree, lists that read as a tree are drawn as one, in the
 // variables, the full-value dialog and on request for a REPL value; nothing
-// of it without.
+// of it without. Their layout: no two nodes overlap, children in order below
+// their parent, the parent centred over them. In a narrow embed (420px) a
+// wide tree starts with its root in the middle, shows a hint at each edge
+// where more is hidden, and scrolls with the keyboard.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -163,9 +166,9 @@ try {
   // COOP/COEP, so the embed is cross-origin isolated and can wait, as the IDE.
   const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
-  const openEmbed = async (headers, query = '') => {
+  const openEmbed = async (headers, query = '', width = 760) => {
     const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
-    await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness, headers }))
+    await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('width:760px', `width:${width}px`), headers }))
     await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
     return page
@@ -345,7 +348,7 @@ try {
       } else {
         await page.keyboard.press('Escape')
         assert.deepEqual(await parts(treeOf('baum')), ['+', 'var', "'x'", 'f', '1', '2'], 'the tree, labels without quotes')
-        assert.equal(await treeOf('baum').getAttribute('aria-label'), "['+', ['var', 'x'], ['f', 1, 2]]", 'its text alternative')
+        assert.equal(await frame.locator('.locals-row[data-name="baum"] .value-tree-scroll').getAttribute('aria-label'), "['+', ['var', 'x'], ['f', 1, 2]]", 'its text alternative')
         assert.equal(await frame.locator('.locals-row[data-name="baum"] .locals-value').innerText(), "['+', ['var', 'x'], ['f', 1, 2]]", 'the text stays')
         // No two nodes overlap; each child is below its parent; the tree
         // stays within the panel.
@@ -394,6 +397,104 @@ try {
     } catch (error) {
       failed += 1
       console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
+  // The layout of trees as they come from a parser, and of uneven ones: no
+  // two nodes overlap, siblings in order from left to right, each parent
+  // above its children and centred over them (over the span from its first
+  // child's left edge to its last child's right edge, as d3-flextree does).
+  const treeProblems = (tree) => tree.evaluate((element) => {
+    const boxes = new Map([...element.querySelectorAll('[data-tree-key]')].map((node) => [node.dataset.treeKey, node.getBoundingClientRect()]))
+    const problems = []
+    const entries = [...boxes]
+    for (const [index, [keyA, a]] of entries.entries()) for (const [keyB, b] of entries.slice(index + 1)) if (!(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)) problems.push(`${keyA} overlaps ${keyB}`)
+    for (const [key, box] of boxes) {
+      const children = []
+      for (let index = 0; boxes.has(key === '' ? String(index) : `${key}.${index}`); index++) children.push(boxes.get(key === '' ? String(index) : `${key}.${index}`))
+      if (children.length === 0) continue
+      for (const [index, child] of children.entries()) {
+        if (child.top <= box.bottom) problems.push(`child ${index} of "${key}" not below it`)
+        if (index > 0 && child.left < children[index - 1].right) problems.push(`child ${index} of "${key}" not right of its sibling`)
+      }
+      const middle = (children[0].left + children.at(-1).right) / 2
+      if (Math.abs((box.left + box.right) / 2 - middle) > 1) problems.push(`"${key}" not centred over its children`)
+    }
+    return problems
+  })
+  const layoutTrees = [
+    ['breit', "['f', ['g', 'erstes', 'zweites'], ['h', 'drittes', 'viertes'], ['k', 'fünftes']]"],
+    ['2 + 3 * 4', "['+', 2, ['*', 3, 4]]"],
+    ['(2 + 3) * 4', "['*', ['+', 2, 3], 4]"],
+    ['-(1 + 2)', "['-', ['+', 1, 2]]"],
+    ['x + 1', "['+', ['var', 'x'], 1]"],
+    ['f(1, 2)', "['f', 1, 2]"],
+    ['uneven, both sides', "['+', ['*', 2, ['-', 7, 3]], ['/', ['+', 1, 2], 3]]"],
+    ['uneven, to the left', "['+', ['+', ['+', 1, 2], 3], ['f', ['var', 'x']]]"],
+  ]
+  {
+    const page = await openEmbed({}, '?features=run,repl,visualize,listtree')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('run', source), 'pass\n')
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      for (const [name, value] of layoutTrees) {
+        await enterRepl(frame, value)
+        await frame.getByRole('button', { name: `Baum: ${value}` }).click()
+        const tree = frame.locator('.repl-tree .value-tree').last()
+        assert.deepEqual(await treeProblems(tree), [], `the layout of ${name}`)
+      }
+      console.log('listtree: the layout: ok')
+    } catch (error) {
+      failed += 1
+      console.error(`listtree: the layout: ${error.message}`)
+    }
+    await page.close()
+  }
+  // Narrow (420px): a tree wider than the console or the dialog starts with
+  // its root in the middle, hints where more is hidden, and the keyboard
+  // scrolls it (Home, End, arrows), the hints following.
+  {
+    const page = await openEmbed({}, '?features=run,repl,visualize,listtree', 420)
+    const frame = page.frameLocator('#embed')
+    const breit = layoutTrees[0][1]
+    const checkNarrow = async (where, scroll) => {
+      const state = () => scroll.evaluate((view) => {
+        const root = view.querySelector('[data-tree-key=""]').getBoundingClientRect()
+        const box = view.getBoundingClientRect()
+        const hints = [...view.parentElement.querySelectorAll('.value-tree-hint')].map((hint) => hint.classList.contains('value-tree-hint--left') ? 'left' : 'right')
+        return { offCentre: Math.abs((root.left + root.right) / 2 - (box.left + box.width / 2)), wider: view.scrollWidth > view.clientWidth, scrollLeft: view.scrollLeft, hints, focusable: view.tabIndex === 0 }
+      })
+      const first = await state()
+      assert.ok(first.wider, `${where}: wider than its place`)
+      assert.ok(first.offCentre <= 2, `${where}: the root in the middle (${first.offCentre}px off)`)
+      assert.deepEqual(first.hints, ['left', 'right'], `${where}: a hint at both edges`)
+      assert.ok(first.focusable, `${where}: takes the focus`)
+      await scroll.focus()
+      await scroll.press('Home')
+      await frame.locator('.value-tree-hint--left').waitFor({ state: 'detached', timeout: 5000 })
+      assert.deepEqual((await state()).hints, ['right'], `${where}: at the left end, the right hint only`)
+      await scroll.press('ArrowRight')
+      assert.ok((await state()).scrollLeft > 0, `${where}: → scrolls`)
+      await scroll.press('End')
+      await frame.locator('.value-tree-hint--right').waitFor({ state: 'detached', timeout: 5000 })
+      assert.deepEqual((await state()).hints, ['left'], `${where}: at the right end, the left hint only`)
+    }
+    try {
+      await page.evaluate((source) => window.send('run', source), `breit = ${breit}\n`)
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      await enterRepl(frame, 'breit')
+      await frame.getByRole('button', { name: 'Baum: breit' }).click()
+      await checkNarrow('the console', frame.locator('.repl-tree .value-tree-scroll'))
+      await page.evaluate((source) => window.send('visualize', source), `breit = ${breit}\n`)
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await frame.locator('.visualizer-controls button').nth(3).click()
+      await frame.locator('.locals-row[data-name="breit"] .locals-tree-more').click()
+      await checkNarrow('the dialog', frame.getByRole('dialog').locator('.value-tree-scroll'))
+      console.log('listtree: narrow: ok')
+    } catch (error) {
+      failed += 1
+      console.error(`listtree: narrow: ${error.message}`)
     }
     await page.close()
   }

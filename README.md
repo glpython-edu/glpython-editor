@@ -194,9 +194,14 @@ is drawn too; the text stays as it is. Where:
 
 A tree of more than 100 nodes, deeper than 10 or containing itself isn't
 drawn; long labels and leaves are shortened in their middle. For screen
-readers each tree is an image described by the list's text. The layout is
-the package's own (`src/treeLayout.ts`, no dependency), in characters of the
-code font, so a tree scales with the text around it.
+readers each tree is an image described by the list's text. A tree wider
+than its place (the console, the dialog, a narrow panel) scrolls sideways:
+it starts with its root in the middle, a ‹ or › at an edge shows that more is
+hidden there, and it takes the focus, so the arrow keys, Home and End scroll
+it. The positions come from [d3-flextree](https://github.com/Klortho/d3-flextree)
+(van der Ploeg's tidy-tree algorithm for nodes of different widths,
+`src/treeLayout.ts`), in characters of the code font, so a tree scales with
+the text around it; the drawing is the package's own.
 
 ### Copying the evaluation as a → chain
 

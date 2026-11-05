@@ -1,3 +1,5 @@
+import { flextree, type FlextreeNode } from 'd3-flextree'
+
 // A tree as TreeView draws it: inner nodes with a label (an operator, a
 // function's name, a list's first string), leaves with a value's text.
 export type TreeNode =
@@ -28,7 +30,7 @@ export type PlacedNode = {
 export type TreeLayout = { nodes: PlacedNode[]; width: number; depth: number }
 
 // Horizontal room around a node's text, and between two neighbouring
-// subtrees, in characters.
+// nodes, in characters.
 const NODE_PADDING = 2
 const SIBLING_GAP = 2
 
@@ -40,42 +42,33 @@ export function nodeWidth(node: TreeNode): number {
   return textWidth(node.kind === 'node' ? node.label : node.text) + NODE_PADDING
 }
 
-// A tidy layout for small trees, in characters (columns) and rows: leaves
-// side by side in order, each parent centred over its children, a subtree
-// as wide as its widest row needs - so subtrees never overlap and the same
-// tree always lands in the same place.
+// A tidy layout, in characters (columns) and rows: children in order below
+// their parent, the parent centred over them, and subtrees moved as close
+// together as their rows allow, so they never overlap and the same tree
+// always lands in the same place. The positions come from d3-flextree: van
+// der Ploeg, "Drawing non-layered tidy trees in linear time", Software:
+// Practice and Experience 44(12), 2014 - Reingold and Tilford's algorithm
+// for nodes of different widths. Every node is one row high, so the rows
+// line up.
 export function layoutTree(root: TreeNode): TreeLayout {
-  const spans = new Map<TreeNode, number>()
-  const span = (node: TreeNode): number => {
-    const own = nodeWidth(node)
-    const children = node.kind === 'node' ? node.children : []
-    const total = children.length === 0 ? own : Math.max(own, children.reduce((sum, child) => sum + span(child), 0) + SIBLING_GAP * (children.length - 1))
-    spans.set(node, total)
-    return total
-  }
-  const width = span(root)
+  const layout = flextree<TreeNode>({
+    children: (node) => (node.kind === 'node' && node.children.length > 0 ? node.children : null),
+    nodeSize: (node) => [nodeWidth(node.data), 1],
+    spacing: SIBLING_GAP,
+  })
+  const tree = layout.hierarchy(root)
+  layout(tree)
+  let left = Infinity
+  let right = -Infinity
+  tree.each((node) => {
+    left = Math.min(left, node.x - node.xSize / 2)
+    right = Math.max(right, node.x + node.xSize / 2)
+  })
   const nodes: PlacedNode[] = []
-  let depth = 0
-  const place = (node: TreeNode, left: number, row: number, key: string, parentKey: string | null): number => {
-    depth = Math.max(depth, row + 1)
-    const total = spans.get(node) ?? 0
-    const own = nodeWidth(node)
-    const placed: PlacedNode = { key, node, x: left + total / 2, width: own, depth: row, parentKey }
-    nodes.push(placed)
-    const children = node.kind === 'node' ? node.children : []
-    if (children.length > 0) {
-      const childrenSpan = children.reduce((sum, child) => sum + (spans.get(child) ?? 0), 0) + SIBLING_GAP * (children.length - 1)
-      let start = left + (total - childrenSpan) / 2
-      const centres = children.map((child, index) => {
-        const centre = place(child, start, row + 1, key === '' ? String(index) : `${key}.${index}`, key)
-        start += (spans.get(child) ?? 0) + SIBLING_GAP
-        return centre
-      })
-      const middle = (centres[0] + centres[centres.length - 1]) / 2
-      placed.x = Math.min(Math.max(middle, left + own / 2), left + total - own / 2)
-    }
-    return placed.x
+  const place = (node: FlextreeNode<TreeNode>, key: string, parentKey: string | null) => {
+    nodes.push({ key, node: node.data, x: node.x - left, width: node.xSize, depth: node.depth, parentKey })
+    node.children?.forEach((child, index) => place(child, key === '' ? String(index) : `${key}.${index}`, key))
   }
-  place(root, 0, 0, '', null)
-  return { nodes, width, depth }
+  place(tree, '', null)
+  return { nodes, width: right - left, depth: tree.height + 1 }
 }
