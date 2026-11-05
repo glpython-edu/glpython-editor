@@ -185,6 +185,9 @@ try {
     for (const button of buttons) button.style.display = ''
     return text
   })
+  // A visualization is shown once its steps are measured: until then the
+  // embed draws some steps a second time, hidden, to know their height.
+  const measured = (frame) => frame.locator('.visualizer-view[data-steady-height="done"]').waitFor({ timeout: 30000 })
   const programLine = (frame) => frame.locator('.repl-line--program .repl-input')
   // A REPL input, once the REPL is free again (until then it keeps the text).
   const enterRepl = async (frame, text) => {
@@ -241,6 +244,7 @@ try {
       await page.evaluate((source) => window.send('visualize', source), 'text = input("> ")\nprint(eval(text))\n')
       await answer(frame, '2 * 3')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       console.log('input(): the visualizer asks, then shows the steps: ok')
     } catch (error) {
       failed += 1
@@ -261,6 +265,7 @@ try {
     try {
       await page.evaluate((source) => window.send('visualize', source), 'def notenschnitt(noten):\n    return sum(noten) / len(noten)\n\ndauer = [1, 2, 30]\nx = dauer[0] + dauer[1]\ny = [1, 2, 30][1]\nschnitt = notenschnitt(dauer)\n')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       const seen = { 5: [], 6: [], 7: [] }
       while (!(await stepButton(2).isDisabled())) {
         await stepButton(2).click()
@@ -273,6 +278,8 @@ try {
       console.log('visualizer: a named list indexed in one step: ok')
 
       await page.evaluate((source) => window.send('visualize', source), 'l = list(range(1, 101))\nbaum = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], 3]]\n')
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
       await stepButton(3).click()
       await frame.locator('.locals-row[data-name="baum"]').waitFor({ timeout: 30000 })
       const short = '[1, 2, 3, 4, 5, …, 100]'
@@ -301,6 +308,8 @@ try {
       for (const mode of ['Kasten', 'Ersetzung']) {
         await frame.locator('.visualizer-mode').getByRole('button', { name: mode }).click()
         await page.evaluate((source) => window.send('visualize', source), displays)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await measured(frame)
         await frame.locator('.frame-box--root > .frame-code .frame-line').filter({ hasText: 'baum = ' }).waitFor({ timeout: 30000 })
         if (!(await stepButton(0).isDisabled())) await stepButton(0).click()
         await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 5000 })
@@ -339,6 +348,7 @@ try {
     try {
       await page.evaluate((source) => window.send('visualize', source), 'baum = ["+", ["var", "x"], ["f", 1, 2]]\ngross = ["+", ["*", 2, ["-", 7, 3]], ["/", ["+", 1, 2], ["liste", "anna", "ben", "carla", 12345]]]\nnamen = ["Anna", "Ben"]\n')
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
       await frame.locator('.locals-row[data-name="namen"]').waitFor({ timeout: 30000 })
       const treeOf = (name) => frame.locator(`.locals-row[data-name="${name}"] .value-tree`)
@@ -503,6 +513,7 @@ try {
       await checkNarrow('the console', frame.locator('.repl-tree .value-tree-scroll'))
       await page.evaluate((source) => window.send('visualize', source), `breit = ${breit}\n`)
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
       await frame.locator('.locals-row[data-name="breit"] .locals-tree-more').click()
       await checkNarrow('the dialog', frame.getByRole('dialog').locator('.value-tree-scroll'))
@@ -526,7 +537,7 @@ try {
     try {
       await page.evaluate((program) => window.send('visualize', program), source)
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
-      await frame.locator('.visualizer-measure').waitFor({ state: 'detached', timeout: 30000 })
+      await measured(frame)
       const state = () => frame.locator('.embed-app').evaluate((app) => {
         const view = app.querySelector('.visualizer-view')
         const line = view.querySelector('.visual-current-line')
