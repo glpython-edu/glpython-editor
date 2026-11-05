@@ -9,6 +9,7 @@
 // node's original source with the step's computed value inline.
 
 import type { ErrorHint } from './errorHints'
+import type { ValueTree } from './treeLayout'
 
 // 'error' is only ever the very last step: the node the uncaught exception
 // was raised at, in the frame it was raised in, with Python's own last
@@ -36,6 +37,9 @@ export type TraceStep = {
   // The abbreviated texts among this step's values ("[1, 2, 3, 4, 5, …, 100]"),
   // each with its full value's index in TraceResult.values.
   fullValues?: Record<string, number>
+  // The values in this step's panel that read as a tree (listtree), each
+  // with its tree's index in TraceResult.trees.
+  trees?: Record<string, number>
   stdoutLen: number
   graphicsLen: number
   // Only present on "loop-iter" steps: every node id inside the loop body,
@@ -151,9 +155,26 @@ export type TraceResult = {
   truncated: boolean
   // The full values behind abbreviated texts (see TraceStep.fullValues).
   values?: FullValue[]
+  // The trees behind panel values (see TraceStep.trees).
+  trees?: ValueTree[]
   // Per file, what call boxes leave out: comments and docstrings, as
   // [line, col, end line, end col] (see _glpython_hidden_ranges).
   hidden?: Record<string, Array<[number, number, number, number]>>
+}
+
+// The tree of each panel value that reads as one, shown up to `uptoStep`
+// (as fullValuesUpTo).
+export function valueTreesUpTo(trace: TraceStep[], uptoStep: number, trees: ValueTree[] | undefined): Map<string, ValueTree> {
+  const result = new Map<string, ValueTree>()
+  if (!trees || trees.length === 0) return result
+  for (const step of trace) {
+    if (step.step > uptoStep) break
+    for (const [text, index] of Object.entries(step.trees ?? {})) {
+      const tree = trees[index]
+      if (tree) result.set(text, tree)
+    }
+  }
+  return result
 }
 
 // A long value in full: Python's repr (`cut` when it's longer than the

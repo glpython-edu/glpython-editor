@@ -36,6 +36,9 @@ jobs:
       # condition comments, readable types and argument checks, the doctest
       # runner and its coverage, and which errors get a hint.
       - run: npm run test:runtime
+      # The trees' layout (our port of van der Ploeg's algorithm) against
+      # d3-flextree, on the course's trees and random ones.
+      - run: npm run test:layout
       # The console in Chrome (on the runner) with Pyodide from its CDN,
       # driving the embed built above: Tests → edit → Tests shows the new
       # report (P20).

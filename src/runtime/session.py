@@ -164,7 +164,63 @@ def _glpython_repl_value(value):
   text = repr(value)
   if len(text) > _GLPYTHON_REPL_MAX_REPR:
     text = text[:_GLPYTHON_REPL_MAX_REPR] + "…"
-  return {"value": text}
+  result = {"value": text}
+  tree = _glpython_tree_of(value)
+  if tree is not None:
+    result["tree"] = tree
+  return result
+
+# A list that reads as a tree, for the UI to draw ("listtree"): a non-empty
+# list whose first element is a string is a node labelled with that string
+# (["+", 2, ["*", 3, 4]]); its other elements are its children - a subtree
+# where they read as a tree too, else a leaf: their repr ("2", "'a'",
+# "[1, 2]"). As JSON: {"label": "+", "children": [...]} and {"leaf": "2"}.
+# Long texts are shortened in their middle. A tree of more than
+# _GLPYTHON_TREE_MAX_NODES nodes, deeper than _GLPYTHON_TREE_MAX_DEPTH or
+# containing itself has none (None), as has any other value.
+_GLPYTHON_TREE_MAX_NODES = 100
+_GLPYTHON_TREE_MAX_DEPTH = 10
+_GLPYTHON_TREE_TEXT_LIMIT = 24
+
+class _GlpythonTreeTooBig(Exception):
+  pass
+
+def _glpython_reads_as_tree(value):
+  return type(value) is list and len(value) > 0 and type(value[0]) is str
+
+def _glpython_tree_text(text):
+  if len(text) <= _GLPYTHON_TREE_TEXT_LIMIT:
+    return text
+  tail = _GLPYTHON_TREE_TEXT_LIMIT // 4
+  return text[: _GLPYTHON_TREE_TEXT_LIMIT - tail - 1] + "…" + text[-tail:]
+
+def _glpython_tree_of(value):
+  if not _glpython_reads_as_tree(value):
+    return None
+  count = [0]
+  active = set()
+
+  def build(item, depth):
+    count[0] += 1
+    if count[0] > _GLPYTHON_TREE_MAX_NODES or depth > _GLPYTHON_TREE_MAX_DEPTH:
+      raise _GlpythonTreeTooBig()
+    if not _glpython_reads_as_tree(item):
+      try:
+        text = repr(item)
+      except Exception:
+        text = "<unrepresentable>"
+      return {"leaf": _glpython_tree_text(text)}
+    if id(item) in active:
+      raise _GlpythonTreeTooBig()
+    active.add(id(item))
+    children = [build(child, depth + 1) for child in item[1:]]
+    active.discard(id(item))
+    return {"label": _glpython_tree_text(item[0]), "children": children}
+
+  try:
+    return build(value, 1)
+  except _GlpythonTreeTooBig:
+    return None
 
 # Whether an expression is a call of the builtin help or dir (not a function
 # of the learner's that happens to have that name).
