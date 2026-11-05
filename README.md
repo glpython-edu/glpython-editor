@@ -198,10 +198,10 @@ readers each tree is an image described by the list's text. A tree wider
 than its place (the console, the dialog, a narrow panel) scrolls sideways:
 it starts with its root in the middle, a ‹ or › at an edge shows that more is
 hidden there, and it takes the focus, so the arrow keys, Home and End scroll
-it. The positions come from [d3-flextree](https://github.com/Klortho/d3-flextree)
-(van der Ploeg's tidy-tree algorithm for nodes of different widths,
-`src/treeLayout.ts`), in characters of the code font, so a tree scales with
-the text around it; the drawing is the package's own.
+it. The positions come from the package's own implementation of van der Ploeg's
+tidy-tree algorithm for nodes of different widths (`src/treeLayout.ts`,
+checked against [d3-flextree](https://github.com/Klortho/d3-flextree)), in
+characters of the code font, so a tree scales with the text around it.
 
 ### Copying the evaluation as a → chain
 

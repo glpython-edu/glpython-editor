@@ -470,6 +470,18 @@ try {
       assert.ok(first.offCentre <= 2, `${where}: the root in the middle (${first.offCentre}px off)`)
       assert.deepEqual(first.hints, ['left', 'right'], `${where}: a hint at both edges`)
       assert.ok(first.focusable, `${where}: takes the focus`)
+      // A hint isn't a node: no border, over the tree's whole height, in a
+      // colour of none of the nodes.
+      const look = await scroll.evaluate((view) => {
+        const box = view.getBoundingClientRect()
+        const nodeColours = new Set([...view.querySelectorAll('[data-tree-key]')].map((node) => getComputedStyle(node).color))
+        return [...view.parentElement.querySelectorAll('.value-tree-hint')].map((hint) => {
+          const style = getComputedStyle(hint)
+          const rect = hint.getBoundingClientRect()
+          return { border: style.borderTopStyle, fullHeight: Math.abs(rect.top - box.top) <= 1 && Math.abs(rect.bottom - box.bottom) <= 1, ownColour: !nodeColours.has(style.color) }
+        })
+      })
+      assert.deepEqual(look, [{ border: 'none', fullHeight: true, ownColour: true }, { border: 'none', fullHeight: true, ownColour: true }], `${where}: the hints don't look like nodes`)
       await scroll.focus()
       await scroll.press('Home')
       await frame.locator('.value-tree-hint--left').waitFor({ state: 'detached', timeout: 5000 })
