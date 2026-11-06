@@ -117,13 +117,47 @@ values, as in the course's paper notation:
 `quadrat(a + 2) → quadrat(5 + 2) → quadrat(7) → 7 * 7 → 49`. Every click is one
 substitution, and a replacing expression gets parentheses where an operator
 works on it (`1 * (3 * 2)`). Any other function still opens a box, and the
-outermost box shows `visualizerBoxHint`. In **box** mode every call opens a box.
+outermost box says why at its top: `notenschnitt hat lokale Variablen – der
+Aufruf wird als Kasten gezeigt.` (`visualizerBoxReason`, one sentence per
+reason: local variables or a loop, an `if` choosing what runs, several
+statements, no `return <expression>`, an expression that can't be written out;
+the runtime's `boxReason` on the call's step). In **box** mode every call opens
+a box.
 
 The mode last chosen is remembered per browser. A host can preset it with the
-`visualizerMode` prop (`'box'` or `'substitution'`), and the embed with the
-`visualizer=box` or `visualizer=substitution` query parameter. The toggle's
-texts are `visualizerModeLabel`, `visualizerModeBox` and
-`visualizerModeSubstitution`, all optional like `visualizerBoxHint`.
+`visualizerMode` prop (`'box'`, `'substitution'` or `'tree'`), and the embed with
+the `visualizer=box`, `visualizer=substitution` or `visualizer=tree` query
+parameter. The toggle's texts are `visualizerModeLabel`, `visualizerModeBox`,
+`visualizerModeSubstitution` and `visualizerModeTree`, all optional like
+`visualizerBoxHint` (the box's note without a reason).
+
+### Tree mode (`tree`)
+
+With the capability `tree` (off by default; the embed's `features=tree`), the
+switch has a third mode, **Baum**: an expression is shown as its syntax tree
+while it is evaluated. Without the capability there is no third button, and a
+stored or preset `'tree'` shows the substitution mode. For an expression `e`
+(the value of an expression statement, an assignment or a `return`, an `if`'s
+or `while`'s condition; not a bare name or literal):
+1. **Open:** one step replaces `e` by its tree, in a box at its place in the line.
+2. **Reductions:** exactly the substitution mode's steps, each one a subtree
+   becoming its value; a node without a step of its own (a display, `-x`)
+   becomes its value with its last child. A call with a single
+   `return <expression>` is replaced by that expression's tree, any other call
+   stays a node whose box hangs below the tree (with the note why).
+3. **Close:** one step from the trivial tree to the value in the line.
+
+So `x = 2 + 3 * 4` takes 5 steps instead of 3. Labels are Python's (`+`,
+`quadrat`, `[ ]`, a name is a leaf); there are no parentheses, so
+`(2 + 3) * 4` and `2 + 3 * 4` differ only in shape. A tree keeps its nodes in
+place from step to step: it is laid out where it opens (and where a call is
+replaced) with room for the widest value each node takes. With the
+visualizer's animations, a reduced subtree's nodes move up into it and fade
+(not with reduced motion). For screen readers each tree is described by its
+text at that step, as the → chain writes it; a tree wider than the visualizer
+scrolls as in `listTree` (root in the middle, hints at the edges, arrow keys).
+The steps come from `treeModeSteps`, the trees from `buildExpressionTree`
+(`src/treeMode.ts`); `npm run test:tree` checks them on traces of the runtime.
 
 ### Lists and long values
 
@@ -434,8 +468,9 @@ Optional query parameters adapt the embed to a host such as the LiaScript
 macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 (`visualize`) or its → chain export (`export`) unless listed (capabilities
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
-coverage after Tests (capability `coverage`), and `listtree` lists drawn as
-trees (capability `listTree`), which a missing `features` doesn't; and `size=large` with
+coverage after Tests (capability `coverage`), `listtree` lists drawn as
+trees (capability `listTree`) and `tree` the visualizer's mode «Baum»
+(capability `tree`), which a missing `features` doesn't; and `size=large` with
 `visualizerHeight=<px>` shows bigger code and a visualizer at least that tall.
 `windowHeight=<px>` is the host window's height, which the iframe can't see:
 the visualizer is at most 80% of it (without it: of the screen's height).

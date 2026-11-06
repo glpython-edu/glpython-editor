@@ -1,8 +1,10 @@
 // A tree as TreeView draws it: inner nodes with a label (an operator, a
 // function's name, a list's first string), leaves with a value's text.
+// `key` names a node across trees (else its path is its key, see
+// PlacedNode), `className` styles it.
 export type TreeNode =
-  | { kind: 'node'; label: string; children: TreeNode[] }
-  | { kind: 'leaf'; text: string }
+  | { kind: 'node'; label: string; children: TreeNode[]; key?: string; className?: string }
+  | { kind: 'leaf'; text: string; key?: string; className?: string }
 
 // A list that reads as a tree, as the runtime sends it (session.py's
 // _glpython_tree_of).
@@ -13,8 +15,9 @@ export function treeFromValue(tree: ValueTree): TreeNode {
 }
 
 export type PlacedNode = {
-  // The path of child indices from the root ("" for the root, "0.2" for its
-  // first child's third child), which stays the same while the tree does.
+  // The node's own key, else the path of child indices from the root (""
+  // for the root, "0.2" for its first child's third child), which stays the
+  // same while the tree does.
   key: string
   node: TreeNode
   // The node's centre and width in characters of the code font, its row
@@ -224,14 +227,17 @@ function secondWalk(node: LayoutNode, modSum: number) {
 // (see separate), so a narrow node comes as close to a sibling whose
 // children are wide as their rows allow. Our nodes are all one row high. scripts/check-tree-layout.mjs compares
 // it with d3-flextree, a published implementation of the same paper.
-export function layoutTree(root: TreeNode): TreeLayout {
+// `room` makes nodes (by key) at least that wide, e.g. for a value that will
+// take a node's place later.
+export function layoutTree(root: TreeNode, room?: Map<string, number>): TreeLayout {
   let depth = 0
-  const build = (tree: TreeNode, row: number): LayoutNode => {
+  const build = (tree: TreeNode, row: number, path: string): LayoutNode => {
     depth = Math.max(depth, row + 1)
-    const children = tree.kind === 'node' ? tree.children.map((child) => build(child, row + 1)) : []
-    return { tree, w: nodeWidth(tree) + SIBLING_GAP, y: row, children, x: 0, prelim: 0, mod: 0, shift: 0, change: 0, tl: null, tr: null, el: null, er: null, msel: 0, mser: 0 }
+    const children = tree.kind === 'node' ? tree.children.map((child, index) => build(child, row + 1, path === '' ? String(index) : `${path}.${index}`)) : []
+    const width = Math.max(nodeWidth(tree), room?.get(tree.key ?? path) ?? 0)
+    return { tree, w: width + SIBLING_GAP, y: row, children, x: 0, prelim: 0, mod: 0, shift: 0, change: 0, tl: null, tr: null, el: null, er: null, msel: 0, mser: 0 }
   }
-  const layoutRoot = build(root, 0)
+  const layoutRoot = build(root, 0, '')
   firstWalk(layoutRoot)
   secondWalk(layoutRoot, 0)
   let left = Infinity
@@ -245,9 +251,10 @@ export function layoutTree(root: TreeNode): TreeLayout {
     right = Math.max(right, node.x + node.w / 2 - SIBLING_GAP / 2)
   })
   const nodes: PlacedNode[] = []
-  const place = (node: LayoutNode, key: string, parentKey: string | null) => {
+  const place = (node: LayoutNode, path: string, parentKey: string | null) => {
+    const key = node.tree.key ?? path
     nodes.push({ key, node: node.tree, x: node.x - left, width: node.w - SIBLING_GAP, depth: node.y, parentKey })
-    node.children.forEach((child, index) => place(child, key === '' ? String(index) : `${key}.${index}`, key))
+    node.children.forEach((child, index) => place(child, path === '' ? String(index) : `${path}.${index}`, key))
   }
   place(layoutRoot, '', null)
   return { nodes, width: right - left, depth }
