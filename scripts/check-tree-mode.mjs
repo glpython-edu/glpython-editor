@@ -24,6 +24,10 @@ const programs = {
   locals: 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5])\n',
   stepless: 'x = 3\nwerte = [x, -x, 2]\n',
   recursion: 'def fak(n):\n    if n == 0:\n        return 1\n    return n * fak(n - 1)\n\nfak(2)\n',
+  labels: 'def summe(x, y):\n    return x + y\n\nsumme(2 + 2, 3 * 4)\n',
+  builtins: 'len([1, 2]) + max(2, 5)\n',
+  keywords: 'def teile(a, b=2, *rest):\n    return a / b\n\nteile(b=4, a=8)\nteile(6)\nteile(*[9, 3])\n',
+  boxInPlace: 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5]) + 1\n',
 }
 
 const python = `
@@ -52,7 +56,8 @@ const check = (label, test) => {
   }
 }
 
-const describeTree = (tree) => tree.kind === 'leaf' ? tree.text : `${tree.label}(${tree.children.map(describeTree).join(', ')})`
+// A node with its edge label as "label:", a call box as "BOX".
+const describeTree = (tree) => `${tree.edgeLabel ? `${tree.edgeLabel}:` : ''}${tree.kind === 'box' ? 'BOX' : tree.kind === 'leaf' ? tree.text : `${tree.label}(${tree.children.map(describeTree).join(', ')})`}`
 const describeStep = (step) => step.treePhase ?? (step.kind === 'call-enter' ? `enter ${step.func}` : step.kind)
 
 for (const [name, result] of Object.entries(results)) {
@@ -121,19 +126,41 @@ check('(2 + 3) * 4: only the shape differs, no parentheses', () => {
 })
 check('quadrat(2 + 1): the call replaced by the tree of its body', () => {
   assert.deepEqual(pattern('shortForm'), ['exec', 'open', 'eval', 'enter quadrat', 'eval', 'close', 'exec'])
-  assert.deepEqual(results.shortForm.shown[0].map((built) => describeTree(built.tree)).filter((text, index, all) => index === 0 || text !== all[index - 1]), ['quadrat(+(2, 1))', 'quadrat(3)', '*(3, 3)', '9'])
+  assert.deepEqual(results.shortForm.shown[0].map((built) => describeTree(built.tree)).filter((text, index, all) => index === 0 || text !== all[index - 1]), ['quadrat(x:+(2, 1))', 'quadrat(x:3)', '*(3, 3)', '9'])
   assert.deepEqual(texts('shortForm'), chain('shortForm'))
 })
 check('notenschnitt([4, 5, 4.5]): a box below the tree, its lines with trees of their own', () => {
   assert.deepEqual(pattern('locals'), ['exec', 'open', 'call-pending', 'enter notenschnitt', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'eval', 'close', 'eval', 'close'])
   const outer = results.locals.shown[0]
-  assert.equal(describeTree(outer[0].tree), 'notenschnitt([4, 5, 4.5])')
+  assert.equal(describeTree(outer[0].tree), 'notenschnitt(noten:[4, 5, 4.5])')
   assert.ok(outer.some((built) => built.boxes.some((frame) => frame.funcName === 'notenschnitt')), 'the box of notenschnitt')
   assert.deepEqual(texts('locals', 3), ['summe / anzahl', '13.5 / anzahl', '13.5 / 3', '4.5'])
 })
 check('[x, -x, 2]: nodes without a step become their value with their last child', () => {
   assert.deepEqual(texts('stepless', 0), ['[x, -x, 2]', '[3, -x, 2]', '[3, -3, 2]'])
   assert.equal(describeTree(results.stepless.shown[0].at(-1).tree), '[3, -3, 2]')
+})
+
+const shapes = (name, episode = 0) => results[name].shown[episode].map((built) => describeTree(built.tree)).filter((text, index, all) => index === 0 || text !== all[index - 1])
+check('summe(2 + 2, 3 * 4): the parameters on the edges until the call is replaced', () => {
+  assert.deepEqual(shapes('labels'), ['summe(x:+(2, 2), y:*(3, 4))', 'summe(x:4, y:*(3, 4))', 'summe(x:4, y:12)', '+(4, 12)', '16'])
+  assert.deepEqual(texts('labels'), chain('labels'), 'the text, as the chain')
+})
+check('len([1, 2]) + max(2, 5): built-in functions get no labels', () => {
+  assert.equal(describeTree(results.builtins.shown[0][0].tree), '+(len([1, 2]), max(2, 5))')
+})
+check('keywords and defaults: the parameter bound; none for *args or a default', () => {
+  assert.equal(describeTree(results.keywords.shown[0][0].tree), 'teile(b:4, a:8)', 'by keyword, no "b=" node')
+  assert.equal(describeTree(results.keywords.shown[1][0].tree), 'teile(a:6)', 'the default b has no edge')
+  assert.equal(describeTree(results.keywords.shown[2][0].tree), 'teile(*([9, 3]))', 'no labels after *')
+})
+check('notenschnitt([4, 5, 4.5]) + 1: the box in the call node\'s place, 1 beside it', () => {
+  const shown = shapes('boxInPlace')
+  assert.deepEqual(shown, ['+(notenschnitt(noten:[4, 5, 4.5]), 1)', '+(BOX, 1)', '+(4.5, 1)', '5.5'])
+  const episode = treeModeSteps(results.boxInPlace.trace, substitutionModeSteps(results.boxInPlace.trace), new Map(Object.entries(results.boxInPlace.ast).map(([path, file]) => [path, indexAstNodes(file)]))).episodes[0]
+  const enter = results.boxInPlace.trace.find((step) => step.kind === 'call-enter')
+  const close = results.boxInPlace.trace.find((step) => step.closesFrameId === enter.frameId)
+  assert.ok(episode.expansions.includes(enter.step) && episode.expansions.includes(close.step), 'laid out again where the box opens and closes')
 })
 
 if (failed > 0) process.exit(1)

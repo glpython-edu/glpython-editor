@@ -1,10 +1,6 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import { layoutTree, type PlacedNode, type TreeLayout, type TreeNode } from './treeLayout'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
+import { EDGE_LABEL_SIZE, edgeLabelPlacement, layoutTree, NODE_HEIGHT, nodeWidth, ROW_HEIGHT, type PlacedNode, type TreeLayout, type TreeNode } from './treeLayout'
 
-// The height of one row of the tree, in em: a node (1.6em) and the room for
-// the edges below it.
-const ROW_HEIGHT = 2.8
-const NODE_HEIGHT = 1.6
 // How far an arrow key scrolls a tree wider than its place, in pixels.
 const KEY_SCROLL_STEP = 40
 
@@ -25,12 +21,14 @@ function leafClass(text: string): string {
 }
 
 function nodeClass(placed: PlacedNode): string {
-  const base = placed.node.kind === 'node' ? 'value-tree-node' : leafClass(placed.node.text)
+  const base = placed.node.kind === 'node' ? 'value-tree-node' : placed.node.kind === 'box' ? 'value-tree-box' : leafClass(placed.node.text)
   return placed.node.className ? `${base} ${placed.node.className}` : base
 }
 
+const textOf = (node: TreeNode) => node.kind === 'node' ? node.label : node.kind === 'leaf' ? node.text : ''
+
 // What a tree looks like, to notice when it changes.
-const signatureOf = (layout: TreeLayout) => layout.nodes.map((placed) => `${placed.key}=${placed.node.kind === 'node' ? placed.node.label : placed.node.text}@${placed.x},${placed.depth}.${placed.node.className ?? ''}`).join('|')
+const signatureOf = (layout: TreeLayout) => layout.nodes.map((placed) => `${placed.key}=${textOf(placed.node)}:${placed.node.edgeLabel ?? ''}@${placed.x},${placed.depth},${nodeWidth(placed.node)}x${placed.rows}.${placed.node.className ?? ''}`).join('|')
 
 // A node that just left the tree (a subtree reduced to its value), moving
 // into the node that took its place while it fades out.
@@ -48,8 +46,10 @@ type Ghost = { key: string; placed: PlacedNode; dx: number; dy: number }
 // `layout` places the nodes instead of laying out `tree` (the tree mode keeps
 // them where they stood); with `animate`, a changed tree moves there:
 // nodes glide to their new place, nodes that left move into their nearest
-// remaining ancestor and fade, new ones fade in.
-export function TreeView({ tree, label, className, layout: placedLayout, animate = false }: { tree: TreeNode; label: string; className?: string; layout?: TreeLayout; animate?: boolean }) {
+// remaining ancestor and fade, new ones fade in. An edge label (a node's
+// `edgeLabel`) sits just above the node, beside the edge's end. A 'box' node
+// is drawn by `renderBox` (the tree mode's call box), as tall as its rows.
+export function TreeView({ tree, label, className, layout: placedLayout, animate = false, renderBox }: { tree: TreeNode; label: string; className?: string; layout?: TreeLayout; animate?: boolean; renderBox?: (key: string) => ReactNode }) {
   const computedLayout = useMemo(() => placedLayout ? null : layoutTree(tree), [tree, placedLayout])
   const signature = signatureOf(placedLayout ?? computedLayout!)
   // The same layout object while the tree looks the same, so the effects
@@ -71,7 +71,7 @@ export function TreeView({ tree, label, className, layout: placedLayout, animate
     const before = new Map(previous.nodes.map((placed) => [placed.key, placed]))
     const left: Ghost[] = []
     for (const placed of previous.nodes) {
-      if (now.has(placed.key)) continue
+      if (now.has(placed.key) || placed.node.kind === 'box') continue
       let target: PlacedNode | undefined
       for (let parentKey = placed.parentKey; parentKey !== null && !target; parentKey = before.get(parentKey)?.parentKey ?? null) target = now.get(parentKey)
       if (target) left.push({ key: placed.key, placed, dx: target.x - placed.x, dy: (target.depth - placed.depth) * ROW_HEIGHT })
@@ -79,7 +79,7 @@ export function TreeView({ tree, label, className, layout: placedLayout, animate
     setGhosts(left)
     setEntering(new Set(layout.nodes.filter((placed) => !before.has(placed.key)).map((placed) => placed.key)))
   }, [layout, animate])
-  const height = layout.depth * ROW_HEIGHT - (ROW_HEIGHT - NODE_HEIGHT)
+  const height = layout.rows * ROW_HEIGHT - (ROW_HEIGHT - NODE_HEIGHT)
   const byKey = new Map(layout.nodes.map((placed) => [placed.key, placed]))
   const frameRef = useRef<HTMLSpanElement>(null)
   const scrollRef = useRef<HTMLSpanElement>(null)
@@ -127,6 +127,8 @@ export function TreeView({ tree, label, className, layout: placedLayout, animate
     <span ref={frameRef} className={`value-tree-frame${animate ? ' value-tree-frame--animated' : ''}${className ? ` ${className}` : ''}`} style={fade ? ({ '--value-tree-fade': fade } as CSSProperties) : undefined}>
       <span ref={scrollRef} className="value-tree-scroll" role="img" aria-label={label} tabIndex={overflows ? 0 : undefined} onScroll={onScroll} onKeyDown={onKeyDown} onPointerDown={() => { scrolledRef.current = true }} onWheel={() => { scrolledRef.current = true }} onTouchStart={() => { scrolledRef.current = true }}>
         <span className="value-tree" style={{ width: `${layout.width}ch`, height: `${height}em` }}>
+          {/* Ten characters of the tree's font, to measure a box in characters. */}
+          {layout.nodes.some((placed) => placed.node.kind === 'box') && <span className="value-tree-probe" aria-hidden="true">0000000000</span>}
           <svg className="value-tree-edges" aria-hidden="true" viewBox={`0 0 ${layout.width} ${height}`} preserveAspectRatio="none" style={{ width: `${layout.width}ch`, height: `${height}em` }}>
             {layout.nodes.map((placed) => {
               const parent = placed.parentKey === null ? undefined : byKey.get(placed.parentKey)
@@ -134,14 +136,26 @@ export function TreeView({ tree, label, className, layout: placedLayout, animate
               return <line key={placed.key} x1={parent.x} y1={parent.depth * ROW_HEIGHT + NODE_HEIGHT} x2={placed.x} y2={placed.depth * ROW_HEIGHT} />
             })}
           </svg>
+          {/* In the label's own (smaller) ch and em, hence the division. */}
+          {layout.nodes.map((placed) => {
+            const parent = placed.parentKey === null ? undefined : byKey.get(placed.parentKey)
+            const place = parent ? edgeLabelPlacement(placed, parent) : null
+            if (!place) return null
+            return <span key={`label:${placed.key}`} className="value-tree-edge-label" aria-hidden="true" style={{ left: `${place.left / EDGE_LABEL_SIZE}ch`, top: `${place.top / EDGE_LABEL_SIZE}em`, fontSize: `${EDGE_LABEL_SIZE}em` }}>{placed.node.edgeLabel}</span>
+          })}
           {ghosts.map((ghost) => (
-            <span key={`ghost:${ghost.key}`} aria-hidden="true" className={`${nodeClass(ghost.placed)} value-tree-ghost`} style={{ left: `${ghost.placed.x - ghost.placed.width / 2}ch`, top: `${ghost.placed.depth * ROW_HEIGHT}em`, width: `${ghost.placed.width}ch`, '--value-tree-dx': `${ghost.dx}ch`, '--value-tree-dy': `${ghost.dy}em` } as CSSProperties} onAnimationEnd={() => setGhosts((current) => current.filter((other) => other !== ghost))}>
-              {ghost.placed.node.kind === 'node' ? ghost.placed.node.label : ghost.placed.node.text}
+            <span key={`ghost:${ghost.key}`} aria-hidden="true" className={`${nodeClass(ghost.placed)} value-tree-ghost`} style={{ left: `${ghost.placed.x - nodeWidth(ghost.placed.node) / 2}ch`, top: `${ghost.placed.depth * ROW_HEIGHT}em`, width: `${nodeWidth(ghost.placed.node)}ch`, '--value-tree-dx': `${ghost.dx}ch`, '--value-tree-dy': `${ghost.dy}em` } as CSSProperties} onAnimationEnd={() => setGhosts((current) => current.filter((other) => other !== ghost))}>
+              {textOf(ghost.placed.node)}
             </span>
           ))}
-          {layout.nodes.map((placed) => (
-            <span key={placed.key} ref={placed.parentKey === null ? rootRef : undefined} aria-hidden="true" data-tree-key={placed.key} className={`${nodeClass(placed)}${entering.has(placed.key) ? ' value-tree-entering' : ''}`} style={{ left: `${placed.x - placed.width / 2}ch`, top: `${placed.depth * ROW_HEIGHT}em`, width: `${placed.width}ch` }}>
-              {placed.node.kind === 'node' ? placed.node.label : placed.node.text}
+          {layout.nodes.map((placed) => placed.node.kind === 'box' ? (
+            // Its own size; centred on its place, its top on its row.
+            <span key={placed.key} ref={placed.parentKey === null ? rootRef : undefined} data-tree-key={placed.key} data-tree-box-key={placed.key} className={nodeClass(placed)} style={{ left: `${placed.x}ch`, top: `${placed.depth * ROW_HEIGHT}em` }}>
+              {renderBox?.(placed.key)}
+            </span>
+          ) : (
+            <span key={placed.key} ref={placed.parentKey === null ? rootRef : undefined} aria-hidden="true" data-tree-key={placed.key} className={`${nodeClass(placed)}${entering.has(placed.key) ? ' value-tree-entering' : ''}`} style={{ left: `${placed.x - nodeWidth(placed.node) / 2}ch`, top: `${placed.depth * ROW_HEIGHT}em`, width: `${nodeWidth(placed.node)}ch` }}>
+              {textOf(placed.node)}
             </span>
           ))}
         </span>

@@ -143,15 +143,32 @@ or `while`'s condition; not a bare name or literal):
 2. **Reductions:** exactly the substitution mode's steps, each one a subtree
    becoming its value; a node without a step of its own (a display, `-x`)
    becomes its value with its last child. A call with a single
-   `return <expression>` is replaced by that expression's tree, any other call
-   stays a node whose box hangs below the tree (with the note why).
+   `return <expression>` is replaced by that expression's tree. Any other
+   call, once its box opens, has the box in its node's place - the parent's
+   edge leads to the box's top, its siblings stay on their row - with the
+   note why it isn't replaced at its top; inside it, each line has its own
+   tree and calls of their own boxes.
 3. **Close:** one step from the trivial tree to the value in the line.
+
+For a call of a function of the program's own, each edge to an argument is
+labelled with the parameter it binds to (`summe(2 + 2, 3 * 4)` with
+`def summe(x, y)`: `x` on the edge to `2 + 2`, `y` on the one to `3 * 4`),
+while the node keeps the function's name. A keyword argument is labelled with
+its parameter, a parameter left to its default has no edge, and there are no
+labels after a `*args` or for `**kwargs`; built-in and library functions
+(`len`, `max`) have none. The labels stay while the arguments are reduced,
+until the call is replaced or its box opens. They sit in the gap above the
+argument, beside the edge's end, in a smaller code font; the layout keeps
+room for them, so they touch no node and no other label.
 
 So `x = 2 + 3 * 4` takes 5 steps instead of 3. Labels are Python's (`+`,
 `quadrat`, `[ ]`, a name is a leaf); there are no parentheses, so
 `(2 + 3) * 4` and `2 + 3 * 4` differ only in shape. A tree keeps its nodes in
-place from step to step: it is laid out where it opens (and where a call is
-replaced) with room for the widest value each node takes. With the
+place from step to step: it is laid out where it opens, where a call is
+replaced and where a call's box opens and closes, with room for the widest
+value each node takes. A box is measured as drawn; while it is open, the tree
+moves only if the box grows (a line of it gets longer, a tree opens in it)
+and never when it shrinks again. With the
 visualizer's animations, a reduced subtree's nodes move up into it and fade
 (not with reduced motion). For screen readers each tree is described by its
 text at that step, as the → chain writes it; a tree wider than the visualizer

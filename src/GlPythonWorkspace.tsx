@@ -11,7 +11,7 @@ import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
 import type { ErrorHint, ErrorHintContext } from './errorHints'
 import { TreeView } from './TreeView'
-import { layoutTree, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
+import { layoutTree, NODE_HEIGHT, ROW_HEIGHT, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
 import { activeTreesAt, buildExpressionTree, episodeTreeLayout, treeKeyOf, treeModeSteps, type TreeEpisode } from './treeMode'
 
 type CoreStrings = {
@@ -913,16 +913,21 @@ function Frame(props: FrameProps) {
 
   // The tree mode: the expression being evaluated in this frame drawn as its
   // tree in its place - with the calls in it, which the tree shows (inline
-  // calls) or hangs below it (boxes).
+  // calls) or draws as their boxes in their place. The boxes' sizes come
+  // from ExpressionTreeBox, which measures them.
   const episode = trees?.active.get(frameId)
   const treeRoot = episode && episode.path === path ? nodeIndex.get(episode.rootNodeId) : undefined
   const treeRange = treeRoot ? locateNodeRenderedRange(lineOffsets, nodeIndex, substitutions, annotations, treeRoot, false, substitutionContext) : null
-  let expressionTree: { tree: TreeNode; layout: TreeLayout; text: string; boxes: OpenFrame[] } | null = null
+  let expressionTree: ((boxSize: BoxSizes) => BuiltExpressionTree | null) | null = null
   if (trees && episode && treeRange) {
     const context = { trace, nodeIndexByFile, sources: visualSources, openFrames, framesAt: trees.framesAt, nextKey: treeKeyOf(nextStep), errorKey: treeKeyOf(errorStep) }
-    const built = buildExpressionTree(context, episode, uptoStep)
-    if (built) {
-      expressionTree = { ...built, layout: episodeTreeLayout(context, episode, uptoStep, built.tree) }
+    const buildWith = (boxSize: BoxSizes) => {
+      const withSizes = { ...context, boxSize }
+      const built = buildExpressionTree(withSizes, episode, uptoStep)
+      return built && { ...built, layout: episodeTreeLayout(withSizes, episode, uptoStep, built.tree) }
+    }
+    if (buildWith(() => undefined)) {
+      expressionTree = buildWith
       const start = treeRange.start - clipStart
       const end = treeRange.end - clipStart
       for (let index = childRanges.length - 1; index >= 0; index--) if (childRanges[index].start >= start && childRanges[index].end <= end) childRanges.splice(index, 1)
@@ -1022,11 +1027,7 @@ function Frame(props: FrameProps) {
     </span>
   )
   const renderSegments = (segments: LineSegment[]): ReactNode[] => segments.map((segment, segmentIndex) => segment.kind === 'child' && segment.frame === null ? (
-    expressionTree && (
-      <ExpressionTreeBox key={segmentIndex} tree={expressionTree.tree} layout={expressionTree.layout} label={expressionTree.text}>
-        {expressionTree.boxes.length > 0 && renderSegments(expressionTree.boxes.map((frame) => ({ kind: 'child', frame })))}
-      </ExpressionTreeBox>
-    )
+    expressionTree && <ExpressionTreeBox key={segmentIndex} build={expressionTree} renderBoxFrame={(frame) => renderChild(frame, frame.frameId)} />
   ) : segment.kind === 'child' ? renderChild(segment.frame!, segmentIndex) : segment.kind === 'group' ? (
 
     <span key={segmentIndex} className={segment.className}>
@@ -1118,14 +1119,23 @@ function Frame(props: FrameProps) {
   )
 }
 
-// The tree mode's tree in a code line, at the place of its expression, with
-// the boxes of the calls in it below. It is at most as wide as the
-// visualizer shows from where it starts, so a wide tree scrolls in itself
-// (TreeView: root centred, hints at the hidden edges) instead of widening
-// the canvas.
-function ExpressionTreeBox({ tree, layout, label, children }: { tree: TreeNode; layout: TreeLayout; label: string; children?: ReactNode }) {
+type BoxSizes = (key: string) => { width: number; rows: number } | undefined
+type BuiltExpressionTree = { tree: TreeNode; layout: TreeLayout; text: string; boxes: OpenFrame[] }
+
+// The tree mode's tree in a code line, at the place of its expression. A
+// call that stays a box is drawn in its node's place, as large as it is:
+// its size is measured here (in characters and rows of the tree) and the
+// tree laid out with it - only ever growing while the box is open, so
+// stepping back and forth doesn't move the tree. The tree is at most as wide
+// as the visualizer shows from where it starts, so a wide tree scrolls in
+// itself (TreeView: root centred, hints at the hidden edges) instead of
+// widening the canvas.
+function ExpressionTreeBox({ build, renderBoxFrame }: { build: (boxSize: BoxSizes) => BuiltExpressionTree | null; renderBoxFrame: (frame: OpenFrame) => ReactNode }) {
   const viewRef = useRef<HTMLSpanElement>(null)
   const [maxWidth, setMaxWidth] = useState<number | null>(null)
+  const [sizes, setSizes] = useState<Map<string, { width: number; rows: number }>>(() => new Map())
+  const [measureTick, setMeasureTick] = useState(0)
+  const built = build((key) => sizes.get(key))
   useLayoutEffect(() => {
     const element = viewRef.current
     const container = element?.closest<HTMLElement>('.visualizer-measure') ?? element?.closest<HTMLElement>('.visualizer-view')
@@ -1140,12 +1150,42 @@ function ExpressionTreeBox({ tree, layout, label, children }: { tree: TreeNode; 
     observer.observe(container)
     return () => observer.disconnect()
   }, [])
+  // The boxes as drawn: a larger one is laid out again (right away, before
+  // the browser paints). After every render, as a box's content changes with
+  // each step; it sets state only when a box grew, and sizes only grow, so
+  // it settles.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    const tree = viewRef.current?.querySelector<HTMLElement>(':scope > .value-tree-frame > .value-tree-scroll > .value-tree')
+    if (!tree) return
+    const boxes = [...tree.querySelectorAll<HTMLElement>(':scope > [data-tree-box-key]')]
+    if (boxes.length === 0) return
+    const em = parseFloat(getComputedStyle(tree).fontSize)
+    const probe = tree.querySelector<HTMLElement>(':scope > .value-tree-probe')
+    const ch = probe ? probe.offsetWidth / 10 : em * 0.6
+    let next: Map<string, { width: number; rows: number }> | null = null
+    for (const box of boxes) {
+      const key = box.dataset.treeBoxKey!
+      const width = Math.ceil(box.offsetWidth / ch * 10) / 10
+      const rows = Math.ceil((box.offsetHeight + (ROW_HEIGHT - NODE_HEIGHT) * em) / (ROW_HEIGHT * em) * 100) / 100
+      const old = (next ?? sizes).get(key)
+      if (old && width <= old.width && rows <= old.rows) continue
+      next ??= new Map(sizes)
+      next.set(key, { width: Math.max(width, old?.width ?? 0), rows: Math.max(rows, old?.rows ?? 0) })
+    }
+    if (next) setSizes(next)
+    const observer = new ResizeObserver(() => setMeasureTick((tick) => tick + 1))
+    for (const box of boxes) observer.observe(box)
+    return () => observer.disconnect()
+  })
+  void measureTick
+  if (!built) return null
+  const boxFrames = new Map(built.boxes.map((frame) => [`box:${frame.frameId}`, frame]))
   return (
     <span className="frame-tree">
       <span className="frame-tree-view" ref={viewRef} style={maxWidth ? { maxWidth } : undefined}>
-        <TreeView tree={tree} layout={layout} label={label} animate />
+        <TreeView tree={built.tree} layout={built.layout} label={built.text} animate renderBox={(key) => { const frame = boxFrames.get(key); return frame ? renderBoxFrame(frame) : null }} />
       </span>
-      {children && <span className="frame-tree-boxes">{children}</span>}
     </span>
   )
 }
@@ -2502,8 +2542,12 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   useLayoutEffect(() => {
     const container = steadyMeasureRef.current
     if (!container || !steadyMeasureCurrent || steadyMeasure.pending.length === 0) return
-    for (const step of container.querySelectorAll<HTMLElement>('[data-measure-step]')) raiseSteadyHeight(step.offsetHeight)
-    const frame = requestAnimationFrame(() => setSteadyMeasure((measure) => ({ ...measure, pending: measure.pending.slice(STEADY_HEIGHT_BATCH) })))
+    // Read a frame later: a tree mode's call box is measured and its tree
+    // laid out again in a render of its own first.
+    const frame = requestAnimationFrame(() => {
+      for (const step of container.querySelectorAll<HTMLElement>('[data-measure-step]')) raiseSteadyHeight(step.offsetHeight)
+      setSteadyMeasure((measure) => ({ ...measure, pending: measure.pending.slice(STEADY_HEIGHT_BATCH) }))
+    })
     return () => cancelAnimationFrame(frame)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steadyMeasure])

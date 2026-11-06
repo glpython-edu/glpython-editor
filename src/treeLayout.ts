@@ -1,10 +1,23 @@
 // A tree as TreeView draws it: inner nodes with a label (an operator, a
 // function's name, a list's first string), leaves with a value's text.
 // `key` names a node across trees (else its path is its key, see
-// PlacedNode), `className` styles it.
+// PlacedNode), `className` styles it, `edgeLabel` labels the edge from its
+// parent (the tree mode: a call's parameter). A 'box' is a node of a given
+// size (in characters and rows) that the host draws itself - the tree
+// mode's call box, in place of its call node.
 export type TreeNode =
-  | { kind: 'node'; label: string; children: TreeNode[]; key?: string; className?: string }
-  | { kind: 'leaf'; text: string; key?: string; className?: string }
+  | { kind: 'node'; label: string; children: TreeNode[]; key?: string; className?: string; edgeLabel?: string }
+  | { kind: 'leaf'; text: string; key?: string; className?: string; edgeLabel?: string }
+  | { kind: 'box'; key: string; width: number; rows: number; className?: string; edgeLabel?: string }
+
+// The geometry TreeView draws with, in em: a row, and a node's height (the
+// rest of a row is the room for the edges).
+export const ROW_HEIGHT = 2.8
+export const NODE_HEIGHT = 1.6
+// An edge label: its font size (em of the tree's), and how far it keeps
+// from the edge's end, in characters of the tree's font.
+export const EDGE_LABEL_SIZE = 0.75
+const EDGE_LABEL_OFFSET = 0.4
 
 // A list that reads as a tree, as the runtime sends it (session.py's
 // _glpython_tree_of).
@@ -15,6 +28,8 @@ export function treeFromValue(tree: ValueTree): TreeNode {
 }
 
 export type PlacedNode = {
+  // How many rows it takes (a box more than one).
+  rows: number
   // The node's own key, else the path of child indices from the root (""
   // for the root, "0.2" for its first child's third child), which stays the
   // same while the tree does.
@@ -28,7 +43,8 @@ export type PlacedNode = {
   parentKey: string | null
 }
 
-export type TreeLayout = { nodes: PlacedNode[]; width: number; depth: number }
+// `rows`: how many rows the tree takes, down to its lowest node's bottom.
+export type TreeLayout = { nodes: PlacedNode[]; width: number; depth: number; rows: number }
 
 // Horizontal room around a node's text, and between two neighbouring
 // nodes, in characters.
@@ -40,7 +56,27 @@ function textWidth(text: string): number {
 }
 
 export function nodeWidth(node: TreeNode): number {
+  if (node.kind === 'box') return node.width
   return textWidth(node.kind === 'node' ? node.label : node.text) + NODE_PADDING
+}
+
+// How wide a node's place must be for its edge label, which sits just above
+// it, beside the edge's end (see edgeLabelPlacement).
+function edgeLabelRoom(node: TreeNode): number {
+  return node.edgeLabel ? 2 * (EDGE_LABEL_OFFSET + textWidth(node.edgeLabel) * EDGE_LABEL_SIZE) : 0
+}
+
+// Where a node's edge label goes, in characters and em of the tree: in the
+// gap above the node, on the side of the edge away from the parent, within
+// the node's own place - so it touches no node and no other label.
+export function edgeLabelPlacement(child: PlacedNode, parent: PlacedNode): { left: number; right: number; top: number; bottom: number } | null {
+  const label = child.node.edgeLabel
+  if (!label) return null
+  const width = textWidth(label) * EDGE_LABEL_SIZE
+  const top = child.depth * ROW_HEIGHT - 0.1 - EDGE_LABEL_SIZE
+  const toTheLeft = parent.x > child.x
+  const left = toTheLeft ? child.x - EDGE_LABEL_OFFSET - width : child.x + EDGE_LABEL_OFFSET
+  return { left, right: left + width, top, bottom: top + EDGE_LABEL_SIZE }
 }
 
 // A node of the layout while it runs, named as in van der Ploeg's paper:
@@ -52,8 +88,9 @@ export function nodeWidth(node: TreeNode): number {
 type LayoutNode = {
   tree: TreeNode
   // As wide as the node plus SIBLING_GAP (half the gap on each side), so
-  // that boxes touching means nodes SIBLING_GAP apart.
+  // that boxes touching means nodes SIBLING_GAP apart; `h` its rows.
   w: number
+  h: number
   y: number
   children: LayoutNode[]
   x: number
@@ -69,8 +106,8 @@ type LayoutNode = {
   mser: number
 }
 
-// Every node is one row high.
-const bottom = (node: LayoutNode) => node.y + 1
+// A node is one row high, a box `rows` high.
+const bottom = (node: LayoutNode) => node.y + node.h
 
 const nextLeftContour = (node: LayoutNode) => (node.children.length === 0 ? node.tl : node.children[0])
 const nextRightContour = (node: LayoutNode) => (node.children.length === 0 ? node.tr : node.children[node.children.length - 1])
@@ -225,7 +262,8 @@ function secondWalk(node: LayoutNode, modSum: number) {
 // with the changes d3-flextree makes to it: positions are a node's centre,
 // not its left edge, and a subtree first moves next to its left sibling
 // (see separate), so a narrow node comes as close to a sibling whose
-// children are wide as their rows allow. Our nodes are all one row high. scripts/check-tree-layout.mjs compares
+// children are wide as their rows allow. Our nodes are one row high, except
+// a box (a leaf), which may take several. scripts/check-tree-layout.mjs compares
 // it with d3-flextree, a published implementation of the same paper.
 // `room` makes nodes (by key) at least that wide, e.g. for a value that will
 // take a node's place later.
@@ -234,8 +272,8 @@ export function layoutTree(root: TreeNode, room?: Map<string, number>): TreeLayo
   const build = (tree: TreeNode, row: number, path: string): LayoutNode => {
     depth = Math.max(depth, row + 1)
     const children = tree.kind === 'node' ? tree.children.map((child, index) => build(child, row + 1, path === '' ? String(index) : `${path}.${index}`)) : []
-    const width = Math.max(nodeWidth(tree), room?.get(tree.key ?? path) ?? 0)
-    return { tree, w: width + SIBLING_GAP, y: row, children, x: 0, prelim: 0, mod: 0, shift: 0, change: 0, tl: null, tr: null, el: null, er: null, msel: 0, mser: 0 }
+    const width = Math.max(nodeWidth(tree), room?.get(tree.key ?? path) ?? 0, edgeLabelRoom(tree))
+    return { tree, w: width + SIBLING_GAP, h: tree.kind === 'box' ? tree.rows : 1, y: row, children, x: 0, prelim: 0, mod: 0, shift: 0, change: 0, tl: null, tr: null, el: null, er: null, msel: 0, mser: 0 }
   }
   const layoutRoot = build(root, 0, '')
   firstWalk(layoutRoot)
@@ -251,11 +289,13 @@ export function layoutTree(root: TreeNode, room?: Map<string, number>): TreeLayo
     right = Math.max(right, node.x + node.w / 2 - SIBLING_GAP / 2)
   })
   const nodes: PlacedNode[] = []
+  let rows = 0
   const place = (node: LayoutNode, path: string, parentKey: string | null) => {
     const key = node.tree.key ?? path
-    nodes.push({ key, node: node.tree, x: node.x - left, width: node.w - SIBLING_GAP, depth: node.y, parentKey })
+    rows = Math.max(rows, node.y + node.h)
+    nodes.push({ key, node: node.tree, x: node.x - left, width: node.w - SIBLING_GAP, depth: node.y, rows: node.h, parentKey })
     node.children.forEach((child, index) => place(child, path === '' ? String(index) : `${path}.${index}`, key))
   }
   place(layoutRoot, '', null)
-  return { nodes, width: right - left, depth }
+  return { nodes, width: right - left, depth, rows }
 }

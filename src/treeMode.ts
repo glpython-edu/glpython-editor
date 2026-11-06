@@ -28,8 +28,11 @@ const REDUCING_KINDS = new Set(['eval', 'call-pending', 'call-enter', 'error'])
 // index in between. `expansions` are the trace steps (as rendered, i.e.
 // `step` numbers) at which the tree's shape grew - its opening, and each
 // inline call replaced by its return expression's tree; `stepped` the nodes
-// (`frameId:nodeId`) that get a value of their own while it is open, and
-// `shownSteps` the trace step of each visualizer step that shows it.
+// (`frameId:nodeId`) that get a value of their own while it is open,
+// `shownSteps` the trace step of each visualizer step that shows it, and
+// `calls` the call-enter step of each call in it (by its node's key), which
+// names the function and so its parameters. A call that stays a box grows
+// the tree too, when its box opens and when it closes.
 export type TreeEpisode = {
   id: number
   frameId: number
@@ -42,6 +45,7 @@ export type TreeEpisode = {
   expansions: number[]
   stepped: Set<string>
   shownSteps: number[]
+  calls: Map<string, TraceStep>
 }
 
 export type TreeModeSteps = { steps: TraceStep[]; episodes: TreeEpisode[] }
@@ -186,14 +190,15 @@ export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[]
     }
     let episode = belongs ? current : undefined
     if (root && !episode && step.kind !== 'error') {
-      episode = { id: episodes.length, frameId: host.frameId, path: host.path, rootNodeId: root.id, openIndex: steps.length, closeIndex: -1, openStep: step.step - 1, closeStep: -1, expansions: [step.step - 1], stepped: new Set(), shownSteps: [] }
+      episode = { id: episodes.length, frameId: host.frameId, path: host.path, rootNodeId: root.id, openIndex: steps.length, closeIndex: -1, openStep: step.step - 1, closeStep: -1, expansions: [step.step - 1], stepped: new Set(), shownSteps: [], calls: new Map() }
       episodes.push(episode)
       open.set(host.frameId, episode)
       steps.push(phaseStep(episode, step.step - 1, 'open', step))
     }
     steps.push(step)
     if (!episode) continue
-    if (step.kind === 'call-enter' && step.shortForm) episode.expansions.push(step.step)
+    if (step.kind === 'call-enter') episode.expansions.push(step.step)
+    if (step.closesFrameId !== null && step.closesFrameId !== undefined && !enterByFrame.get(step.closesFrameId)?.shortForm) episode.expansions.push(step.step)
     // Once the expression itself has its value, its tree closes.
     if (step.kind === 'eval' && step.frameId === host.frameId && step.nodeId === root?.id) close(episode, step.step, step)
   }
@@ -216,6 +221,7 @@ export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[]
       if (step.step <= episode.openStep) continue
       if (step.step > episode.closeStep) break
       if (step.kind === 'eval') episode.stepped.add(nodeKey(step.frameId, step.nodeId))
+      if (step.kind === 'call-enter' && !episode.calls.has(nodeKey(step.parentFrameId ?? 0, step.nodeId))) episode.calls.set(nodeKey(step.parentFrameId ?? 0, step.nodeId), step)
     }
   }
   return { steps, episodes }
@@ -262,6 +268,34 @@ export type ExpressionTreeContext = {
   // The node the next step works on (`frameId:nodeId`), and the failing one.
   nextKey: string | null
   errorKey: string | null
+  // A call box's size as drawn (characters, rows), by its key ("box:<frame>").
+  boxSize?: (key: string) => { width: number; rows: number } | undefined
+}
+
+// A box's size until it has been measured.
+const BOX_GUESS = { width: 24, rows: 3 }
+
+// The parameter each argument of a call binds to, for its edge's label:
+// positional ones in order (none after a *args), keywords by name (none for
+// **kwargs). Null where there is none to name.
+function parameterNames(def: AstNode, call: AstNode): { positional: Array<string | null>; keywords: Array<string | null> } {
+  const parameters = def.fields.args as AstNode | undefined
+  const names = (field: string) => {
+    const value = parameters?.fields[field]
+    return Array.isArray(value) ? value.filter((item): item is AstNode => item !== null && typeof item === 'object').map((item) => item.summary) : []
+  }
+  const positional = [...names('posonlyargs'), ...names('args')]
+  const byKeyword = new Set([...names('args'), ...names('kwonlyargs')])
+  const args = Array.isArray(call.fields.args) ? call.fields.args.filter((item): item is AstNode => item !== null && typeof item === 'object') : []
+  const starred = args.some((arg) => arg.type === 'Starred')
+  const keywords = Array.isArray(call.fields.keywords) ? call.fields.keywords.filter((item): item is AstNode => item !== null && typeof item === 'object') : []
+  return {
+    positional: args.map((_, index) => !starred && index < positional.length ? positional[index] : null),
+    keywords: keywords.map((keyword) => {
+      const name = typeof keyword.fields.arg === 'string' ? keyword.fields.arg.replace(/^'|'$/g, '') : null
+      return name !== null && byKeyword.has(name) ? name : null
+    }),
+  }
 }
 
 // The key a step's node has in a tree (see nodeKey): a call-enter's call
@@ -274,6 +308,9 @@ export function treeKeyOf(step: TraceStep | null): string | null {
 // The episode's tree after trace step `uptoStep`.
 export function buildExpressionTree(context: ExpressionTreeContext, episode: TreeEpisode, uptoStep: number): ExpressionTree | null {
   const { trace, nodeIndexByFile, sources, openFrames, nextKey, errorKey } = context
+  // The frames really open (not one about to open): a call is replaced or
+  // becomes a box only once its frame is.
+  const openNow = context.framesAt(uptoStep)
   const substitutionsByFrame = new Map<string, Map<number, string>>()
   const substitutionsOf = (frameId: number, path: string) => {
     const cacheKey = `${frameId}:${path}`
@@ -357,24 +394,41 @@ export function buildExpressionTree(context: ExpressionTreeContext, episode: Tre
       }
       case 'Call': {
         const func = node.fields.func as AstNode
-        const args = list('args')
-        const keywords = Array.isArray(node.fields.keywords) ? node.fields.keywords.filter((item): item is AstNode => item !== null && typeof item === 'object').map((keyword) => {
+        // A function of the program's own (it has a call-enter): each
+        // argument's edge names its parameter, a keyword argument needs no
+        // "name=" node then.
+        const enter = episode.calls.get(key)
+        const def = enter?.funcDefPath && enter.funcDefNodeId !== null ? nodeIndexByFile.get(enter.funcDefPath)?.get(enter.funcDefNodeId) : undefined
+        const names = def ? parameterNames(def, node) : null
+        const labelled = (built: Built, name: string | null | undefined): Built => name ? { ...built, tree: { ...built.tree, edgeLabel: name } } : built
+        const args = list('args').map((built, index) => labelled(built, names?.positional[index]))
+        const keywords = Array.isArray(node.fields.keywords) ? node.fields.keywords.filter((item): item is AstNode => item !== null && typeof item === 'object').map((keyword, index) => {
           const valueNode = keyword.fields.value as AstNode
           const built = build(valueNode, frameId, path)
           const name = typeof keyword.fields.arg === 'string' ? keyword.fields.arg.replace(/^'|'$/g, '') : null
+          const parameter = names?.keywords[index]
+          if (parameter) return { ...labelled(built, parameter), text: `${name}=${built.text}` }
           const label = name ? `${name}=` : '**'
           return { tree: { kind: 'node' as const, label, children: [built.tree], key: nodeKey(frameId, keyword.id) }, text: `${label}${built.text}`, precedence: ATOM, isValue: false }
         }) : []
         const children = [...args, ...keywords]
         // A call shown inline in the substitution mode: its return
         // expression's tree, with the parameters' values.
-        const frame = [...openFrames.values()].find((candidate) => candidate.parentFrameId === frameId && candidate.anchorPath === path && candidate.anchorNodeId === node.id)
+        const frame = [...openNow.values()].find((candidate) => candidate.parentFrameId === frameId && candidate.anchorPath === path && candidate.anchorNodeId === node.id)
         if (frame?.shortForm) {
           const returnNode = nodeIndexByFile.get(frame.funcDefPath)?.get(frame.shortForm.returnNodeId)
           if (returnNode) return build(returnNode, frame.frameId, frame.funcDefPath)
         }
-        if (frame) boxes.push(frame)
         const argsText = children.map((built) => built.text).join(', ')
+        // Any other call, once its frame is open: its box, in the call's
+        // place (the box's header shows the parameters' values).
+        if (frame) {
+          boxes.push(frame)
+          const boxKey = `box:${frame.frameId}`
+          const size = context.boxSize?.(boxKey) ?? BOX_GUESS
+          const callText = func?.type === 'Name' ? `${func.summary}(${argsText})` : sourceText(path, node)
+          return { tree: { kind: 'box', key: boxKey, width: size.width, rows: size.rows, className }, text: callText, precedence: ATOM, isValue: false }
+        }
         if (func?.type === 'Name') return inner(func.summary, children, `${func.summary}(${argsText})`, ATOM)
         if (func?.type === 'Attribute') {
           const object = build(func.fields.value as AstNode, frameId, path)
@@ -441,6 +495,9 @@ export function stableTreeLayout(shape: TreeLayout, current: TreeNode): { layout
   const now = layoutTree(current)
   const before = new Map(shape.nodes.map((placed) => [placed.key, placed]))
   if (now.nodes.some((placed) => !before.has(placed.key))) return { layout: now, fresh: true }
+  // A box that grew (a line of it got longer, a tree opened in it) needs
+  // its place made again.
+  if (now.nodes.some((placed) => placed.node.kind === 'box' && (placed.rows !== before.get(placed.key)!.rows || placed.width > before.get(placed.key)!.width))) return { layout: now, fresh: true }
   const nodes = now.nodes.map((placed) => {
     const old = before.get(placed.key)!
     return { ...placed, x: old.x, depth: old.depth }
@@ -462,7 +519,7 @@ export function stableTreeLayout(shape: TreeLayout, current: TreeNode): { layout
       if (next && placed.x + placed.width / 2 + 1 > next.x - next.width / 2) return { layout: now, fresh: true }
     }
   }
-  return { layout: { nodes, width: right, depth: shape.depth }, fresh: false }
+  return { layout: { nodes, width: right, depth: shape.depth, rows: shape.rows }, fresh: false }
 }
 
 // The layout of an episode's tree after trace step `uptoStep`. The tree is

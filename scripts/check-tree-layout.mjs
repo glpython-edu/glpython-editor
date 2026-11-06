@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { layoutTree, nodeWidth } from '../src/treeLayout.ts'
+import { edgeLabelPlacement, layoutTree, NODE_HEIGHT, nodeWidth, ROW_HEIGHT } from '../src/treeLayout.ts'
 
 const { flextree } = createRequire(import.meta.url)('d3-flextree')
 // The same gap between neighbouring nodes as treeLayout.ts.
@@ -23,9 +23,13 @@ const treeOf = (value) => Array.isArray(value) && typeof value[0] === 'string'
   ? { kind: 'node', label: value[0], children: value.slice(1).map(treeOf) }
   : { kind: 'leaf', text: typeof value === 'string' ? `'${value}'` : JSON.stringify(value) }
 
+// The room an edge label takes (as treeLayout's edgeLabelRoom).
+const labelRoom = (node) => node.edgeLabel ? 2 * (0.4 + [...node.edgeLabel].length * 0.75) : 0
 // flextree's positions, moved so that the tree's left edge is at 0, by key.
+// A box is as many rows high as it says (only leaves are boxes, so every
+// row starts where flextree starts it: below a parent one row high).
 function oracle(tree) {
-  const layout = flextree({ children: (node) => (node.kind === 'node' && node.children.length > 0 ? node.children : null), nodeSize: (node) => [nodeWidth(node.data), 1], spacing: SIBLING_GAP })
+  const layout = flextree({ children: (node) => (node.kind === 'node' && node.children.length > 0 ? node.children : null), nodeSize: (node) => [Math.max(nodeWidth(node.data), labelRoom(node.data)), node.data.kind === 'box' ? node.data.rows : 1], spacing: SIBLING_GAP })
   const root = layout.hierarchy(tree)
   layout(root)
   let left = Infinity
@@ -35,9 +39,9 @@ function oracle(tree) {
     right = Math.max(right, node.x + node.xSize / 2)
   })
   const positions = new Map()
-  const visit = (node, key) => {
-    positions.set(key, { x: node.x - left, depth: node.depth })
-    node.children?.forEach((child, index) => visit(child, key === '' ? String(index) : `${key}.${index}`))
+  const visit = (node, path) => {
+    positions.set(node.data.key ?? path, { x: node.x - left, depth: node.depth })
+    node.children?.forEach((child, index) => visit(child, path === '' ? String(index) : `${path}.${index}`))
   }
   visit(root, '')
   return { positions, width: right - left }
@@ -85,6 +89,40 @@ const randomTree = (depth) => {
 const RANDOM_TREES = 500
 for (let index = 0; index < RANDOM_TREES; index++) compare(`random tree ${index}`, randomTree(0))
 
+// The tree mode's trees: some leaves are call boxes several rows high, some
+// edges have labels (a parameter's name). Still flextree's positions, and
+// no label touches a node or another label.
+const randomCallTree = (depth) => {
+  const arity = depth >= 4 ? 0 : Math.floor(random() * 4)
+  const edgeLabel = random() < 0.5 ? 'x'.repeat(1 + Math.floor(random() * 6)) : undefined
+  if (arity === 0) return random() < 0.3
+    ? { kind: 'box', key: `box${Math.floor(random() * 1e9)}`, width: 10 + Math.floor(random() * 40), rows: 1 + Math.floor(random() * 50) / 10, edgeLabel }
+    : { kind: 'leaf', text: randomText(), edgeLabel }
+  return { kind: 'node', label: randomText(), children: Array.from({ length: arity }, () => randomCallTree(depth + 1)), edgeLabel }
+}
+const rectsOf = (layout) => {
+  const byKey = new Map(layout.nodes.map((placed) => [placed.key, placed]))
+  const nodes = layout.nodes.map((placed) => ({ key: placed.key, left: placed.x - nodeWidth(placed.node) / 2, right: placed.x + nodeWidth(placed.node) / 2, top: placed.depth * ROW_HEIGHT, bottom: placed.depth * ROW_HEIGHT + (placed.node.kind === 'box' ? placed.rows * ROW_HEIGHT - (ROW_HEIGHT - NODE_HEIGHT) : NODE_HEIGHT) }))
+  const labels = layout.nodes.flatMap((placed) => {
+    const parent = byKey.get(placed.parentKey)
+    const place = parent ? edgeLabelPlacement(placed, parent) : null
+    return place ? [{ key: `label:${placed.key}`, ...place }] : []
+  })
+  return { nodes, labels }
+}
+const overlaps = (a, b) => a.left < b.right - 1e-9 && b.left < a.right - 1e-9 && a.top < b.bottom - 1e-9 && b.top < a.bottom - 1e-9
+let labelled = 0
+for (let index = 0; index < RANDOM_TREES; index++) {
+  const tree = randomCallTree(0)
+  compare(`random call tree ${index}`, tree)
+  const { nodes, labels } = rectsOf(layoutTree(tree))
+  labelled += labels.length
+  for (const label of labels) {
+    for (const other of [...nodes, ...labels]) if (other !== label) assert.ok(!overlaps(label, other), `random call tree ${index}: ${label.key} overlaps ${other.key}`)
+  }
+}
+assert.ok(labelled > RANDOM_TREES, 'labels were checked')
+
 // Not in the builds, nor in the notices.
 const maps = [
   ...(existsSync('dist/index.js.map') ? ['dist/index.js.map'] : []),
@@ -96,4 +134,5 @@ for (const map of maps) {
 }
 assert.ok(!/flextree|d3-hierarchy|WTFPL/i.test(readFileSync('THIRD_PARTY_NOTICES.md', 'utf8')), 'nothing of it in THIRD_PARTY_NOTICES.md')
 
+console.log(`Tree layout checks passed (boxes and edge labels in ${RANDOM_TREES} call trees too)`)
 console.log(`Tree layout checks passed (${courseTrees.length} trees of the course, ${RANDOM_TREES} random ones; ${maps.length} source maps without d3).`)
