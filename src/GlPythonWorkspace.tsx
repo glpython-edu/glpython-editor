@@ -2092,13 +2092,15 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     if (!text) return t.visualizerBoxHint ?? 'The box shows which return is executed.'
     return <><code>{funcName}</code> {text}</>
   }
-  // The module's frame at a step, with the boxes and inline calls inside it.
+  // The module's frame at a step, with the boxes and inline calls inside it:
+  // the file that ran (a visualized REPL input's pseudo-file, else the main
+  // file), whichever tab is open.
   const rootFrame = (view: StepView) => {
     const collapsedLabel = view.collapsedCalls
       ? t.visualizerCollapsedCalls?.(view.collapsedCalls.hiddenCount, view.collapsedCalls.callText)
         ?? `\u2026 ${view.collapsedCalls.hiddenCount} more calls${view.collapsedCalls.callText ? ` of ${view.collapsedCalls.callText}` : ''} \u2026`
       : ''
-    return <Frame frameId={0} path={visualRootPath ?? activeFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={boxHintFor} trees={treeMode ? { active: view.activeTrees, framesAt: treeFramesAt } : null} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
+    return <Frame frameId={0} path={visualRootPath ?? project.mainFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={boxHintFor} trees={treeMode ? { active: view.activeTrees, framesAt: treeFramesAt } : null} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
   }
   const changeVisualizerMode = (mode: VisualizerMode) => {
     if (mode === effectiveMode) return
