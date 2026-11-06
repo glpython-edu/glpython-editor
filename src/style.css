@@ -350,6 +350,31 @@
 .visualizer-mode button[aria-pressed="true"] { color: var(--glp-on-accent); background: var(--glp-accent); }
 
 .frame-hint { padding: 2px 12px 4px; color: var(--glp-text-muted); font: italic 13px/1.5 var(--glp-font-ui); white-space: normal; }
+.frame-hint code { font: normal 600 13px/1.5 var(--glp-font-code); color: var(--glp-text); }
+/* The tree mode («Baum»): the expression's tree in a box at its place in the
+   line, the boxes of its calls below it. The tree scrolls in itself when it
+   is wider than the visualizer shows (ExpressionTreeBox sets the width). */
+.frame-tree { display: inline-flex; flex-direction: column; gap: 8px; max-width: 100%; margin: 2px 0; padding: 6px 8px; vertical-align: top; white-space: normal; background: var(--glp-bg); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); }
+.frame-tree-view { display: block; min-width: 0; }
+.frame-tree-boxes { display: block; white-space: pre; }
+.value-tree-leaf--name { color: var(--glp-text); }
+.value-tree-leaf--code { color: var(--glp-text-muted); }
+.value-tree-leaf--value { font-weight: 600; }
+.value-tree .visual-next-step { outline: 1.5px dashed var(--glp-current-outline); outline-offset: 1px; }
+.value-tree .visual-error-node { outline-offset: 1px; }
+/* Steps in the tree: nodes glide to a new place, the children of a reduced
+   subtree move up into it and fade, new nodes fade in - only with the
+   visualizer's animations and without reduced motion. */
+.value-tree-ghost { display: none; pointer-events: none; }
+.visualizer-animated .value-tree-frame--animated .value-tree-node, .visualizer-animated .value-tree-frame--animated .value-tree-leaf { transition: left .35s ease, top .35s ease, width .35s ease, background-color .25s ease; }
+.visualizer-animated .value-tree-frame--animated .value-tree-ghost { display: block; animation: value-tree-leave .4s ease-in forwards; }
+.visualizer-animated .value-tree-frame--animated .value-tree-entering { animation: visual-fade-in .3s ease backwards; }
+.visualizer-animated .value-tree-frame--animated .value-tree-leaf--value:not(.value-tree-ghost) { animation: visual-value-pop .6s ease; }
+@keyframes value-tree-leave { to { transform: translate(var(--value-tree-dx), var(--value-tree-dy)); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .visualizer-animated .value-tree-frame--animated .value-tree-node, .visualizer-animated .value-tree-frame--animated .value-tree-leaf { transition: none; animation: none; }
+  .visualizer-animated .value-tree-frame--animated .value-tree-ghost { display: none; }
+}
 
 .test-report { margin-top: 6px; }
 .test-report pre { min-height: 0; max-height: none; margin: 0; padding: 0; background: transparent; white-space: pre-wrap; font: inherit; }

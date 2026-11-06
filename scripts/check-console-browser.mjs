@@ -24,6 +24,9 @@
 // A steady height: while stepping through a visualization the embed keeps
 // one height (the visualizer the tallest step's, at most 80% of the window,
 // the console the last step's output), and the current line stays in view.
+// The mode «Baum» (with "tree"): «Ersetzung»'s steps plus open and close
+// for each tree, nodes that stay in place, one height, and the hint at a
+// call that stays a box (also in «Ersetzung»); without "tree" no button.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -560,6 +563,107 @@ try {
     } catch (error) {
       failed += 1
       console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
+  // The visualizer's mode «Baum» (P34 A): only with "tree" in features= -
+  // without it no mode button, and a stored or preset «Baum» shows
+  // «Ersetzung». With it, each example takes «Ersetzung»'s steps plus one to
+  // open and one to close each tree; a reduction moves no node of the tree;
+  // each tree is described by its text, step by step as the chain; the embed
+  // keeps one height; and a call that stays a box says why, in «Ersetzung»
+  // and in «Baum».
+  {
+    const page = await openEmbed({}, '?visualizer=tree')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('visualize', source), 'x = 2 + 3 * 4\n')
+      await measured(frame)
+      assert.deepEqual(await frame.locator('.visualizer-mode button').allInnerTexts(), ['Kasten', 'Ersetzung'], 'the mode buttons')
+      assert.equal(await frame.locator('.visualizer-mode button[aria-pressed="true"]').innerText(), 'Ersetzung', 'the mode shown')
+      console.log('Baum: without "tree" no mode button: ok')
+    } catch (error) {
+      failed += 1
+      console.error(`Baum: without "tree": ${error.message}`)
+    }
+    await page.close()
+  }
+  {
+    const notenschnitt = 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5])\n'
+    const page = await openEmbed({}, '?features=visualize,tree&windowHeight=900')
+    const frame = page.frameLocator('#embed')
+    const stepCount = () => frame.locator('.visualizer-step-count').innerText()
+    const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
+    // A mode switch stays at the same point of the program, maybe already at
+    // the last step.
+    const lastStep = async () => {
+      const button = frame.locator('.visualizer-controls button').nth(3)
+      if (await button.isEnabled()) await button.click()
+      return Number((await stepCount()).match(/von (\d+)/)[1])
+    }
+    for (const [label, source, ersetzung, trees, texts] of [
+      ['2 + 3 * 4', 'x = 2 + 3 * 4\n', 3, 1, ['2 + 3 * 4', '2 + 12', '14']],
+      ['(2 + 3) * 4', 'x = (2 + 3) * 4\n', 3, 1, ['(2 + 3) * 4', '5 * 4', '20']],
+      ['quadrat(2 + 1)', 'def quadrat(x):\n    return x * x\n\ny = quadrat(2 + 1)\n', 5, 1, ['quadrat(2 + 1)', 'quadrat(3)', '3 * 3', '9']],
+      ['notenschnitt([4, 5, 4.5])', notenschnitt, 13, 4, null],
+    ]) {
+      try {
+        await page.evaluate((program) => window.send('visualize', program), source)
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        await measured(frame)
+        await mode('Ersetzung')
+        assert.equal(await lastStep(), ersetzung, 'the steps of «Ersetzung»')
+        await mode('Baum')
+        await measured(frame)
+        assert.equal(await lastStep(), ersetzung + 2 * trees, '«Ersetzung» plus open and close')
+        await frame.locator('.visualizer-controls button').nth(0).click()
+        const state = () => frame.locator('.embed-app').evaluate((app) => {
+          const tree = app.querySelector('.visualizer-canvas > .frame-box > .frame-code .value-tree-scroll')
+          return {
+            height: Math.round(app.getBoundingClientRect().height),
+            text: tree?.getAttribute('aria-label') ?? null,
+            // Each node's centre (a value takes its subtree's place, whatever its width) and row.
+            nodes: tree ? Object.fromEntries([...tree.querySelectorAll('[data-tree-key]')].map((node) => [node.dataset.treeKey, `${parseFloat(node.style.left) + parseFloat(node.style.width) / 2} ${node.style.top}`])) : null,
+          }
+        })
+        const states = [await state()]
+        const next = frame.locator('.visualizer-controls button').nth(2)
+        while (await next.isEnabled()) {
+          await next.click()
+          states.push(await state())
+        }
+        assert.deepEqual([...new Set(states.map((step) => step.height))], [states[0].height], 'one height for every step')
+        if (texts) assert.deepEqual(states.map((step) => step.text).filter((text, index, all) => text !== null && text !== all[index - 1]), texts, 'the tree described by its text, as the chain')
+        // A reduction (no new node) leaves every node where it was.
+        states.forEach((step, index) => {
+          const before = states[index - 1]?.nodes
+          if (!before || !step.nodes || !Object.keys(step.nodes).every((key) => key in before)) return
+          for (const [key, place] of Object.entries(step.nodes)) assert.equal(place, before[key], `node ${key} moved at step ${index}`)
+        })
+        console.log(`Baum: ${label}: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`Baum: ${label}: ${error.message}`)
+      }
+    }
+    // The hint at a call that stays a box, in both modes.
+    for (const name of ['Ersetzung', 'Baum']) {
+      try {
+        await mode(name)
+        await measured(frame)
+        await frame.locator('.visualizer-controls button').nth(0).click()
+        const next = frame.locator('.visualizer-controls button').nth(2)
+        for (let index = 0; index < 6; index++) await next.click()
+        // Not a closing box's fading copy (.visualizer-closing-boxes).
+        const hint = frame.locator('.visualizer-view > .visualizer-canvas > .frame-box .frame-hint[data-box-reason="locals"]')
+        await hint.waitFor({ timeout: 5000 })
+        assert.equal(await hint.innerText(), 'notenschnitt hat lokale Variablen – der Aufruf wird als Kasten gezeigt.')
+        assert.equal(await frame.locator('.visualizer-mode button', { hasText: name }).getAttribute('aria-pressed'), 'true')
+        console.log(`Baum: the hint at the box in «${name}»: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`Baum: the hint in «${name}»: ${error.message}`)
+      }
     }
     await page.close()
   }

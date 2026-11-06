@@ -111,7 +111,15 @@ export type TraceStep = {
   // On an "if" statement's "branch" step: its condition with the names
   // replaced by their values, e.g. "2 == 0".
   conditionText?: string | null
+  // On "call-enter" without a short form: why the call stays a box in the
+  // substitution and tree modes (see the runtime's _glpython_box_reason).
+  boxReason?: BoxReason | null
+  // Only on the tree mode's own steps (see treeModeSteps), which open or
+  // close an expression's tree; not part of the trace.
+  treePhase?: 'open' | 'close'
 }
+
+export type BoxReason = 'locals' | 'branches' | 'statements' | 'no-return' | 'expression'
 
 // How a qualifying call is shown in the substitution mode: replaced at its
 // call site by its return expression, with each parameter name in it
@@ -124,7 +132,7 @@ export type ShortForm = {
   parens: boolean
 }
 
-export type VisualizerMode = 'box' | 'substitution'
+export type VisualizerMode = 'box' | 'substitution' | 'tree'
 
 export type AstNode = {
   id: number

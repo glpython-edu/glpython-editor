@@ -503,6 +503,9 @@ def _glpython_record_call_enter(call_node, glpython_function, frame_id, parent_f
     # has local variables or loops (its replacement gets a comment).
     "inOperator": getattr(call_node, "_glpython_in_operator", False),
     "hasLocals": getattr(glpython_function.node, "_glpython_has_locals", False),
+    # Without the short form: why the call stays a box (see
+    # _glpython_box_reason), for the UI's note at the box.
+    "boxReason": None if short_form is not None else getattr(glpython_function.node, "_glpython_box_reason", None),
   }
   _glpython_append_step(entry)
   _glpython_step_count += 1
@@ -1393,6 +1396,34 @@ def _glpython_has_locals(def_node):
     pending.extend(ast.iter_child_nodes(node))
   return False
 
+# Why a function doesn't get the short form, for the note at its box in the
+# substitution and tree modes: "locals" (it assigns local variables or
+# loops), "branches" (an "if" or "match" chooses what runs), "expression" (a
+# single "return" whose expression can't be written out with the values,
+# e.g. a comprehension), "no-return" (no "return <expression>" at all), or
+# "statements" (several statements). Nested functions and classes don't count.
+def _glpython_box_reason(def_node):
+  if _glpython_has_locals(def_node):
+    return "locals"
+  body = def_node.body
+  if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+    body = body[1:]
+  statements = []
+  pending = list(body)
+  while pending:
+    node = pending.pop()
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+      continue
+    statements.append(node)
+    pending.extend(ast.iter_child_nodes(node))
+  if any(isinstance(node, (ast.If, ast.Match)) for node in statements):
+    return "branches"
+  if len(body) == 1 and isinstance(body[0], ast.Return) and body[0].value is not None:
+    return "expression"
+  if not any(isinstance(node, ast.Return) and node.value is not None for node in statements):
+    return "no-return"
+  return "statements"
+
 def _glpython_preprocess(tree, source, counter):
   # Lines as ast numbers them (it treats \r\n, \r and \n as line breaks).
   lines = re.split(r"\r\n|\r|\n", source)
@@ -1418,6 +1449,7 @@ def _glpython_preprocess(tree, source, counter):
     if isinstance(node, ast.FunctionDef):
       node._glpython_short_form = _glpython_short_form(node)
       node._glpython_has_locals = _glpython_has_locals(node)
+      node._glpython_box_reason = _glpython_box_reason(node)
     # A call whose value an operator works on - including the object of an
     # attribute or subscript - needs parentheses around an expression that
     # replaces it (see "parens" on the call-enter step).

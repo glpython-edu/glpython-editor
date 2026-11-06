@@ -39,6 +39,10 @@ jobs:
       # The trees' layout (our port of van der Ploeg's algorithm) against
       # d3-flextree, on the course's trees and random ones.
       - run: npm run test:layout
+      # The visualizer's mode «Baum» on traces of the runtime: its steps are
+      # «Ersetzung»'s plus open and close, its text the chain's, and a
+      # reduction moves no node.
+      - run: npm run test:tree
       # The console in Chrome (on the runner) with Pyodide from its CDN,
       # driving the embed built above: Tests → edit → Tests shows the new
       # report (P20).

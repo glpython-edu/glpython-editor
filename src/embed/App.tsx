@@ -39,8 +39,9 @@ function createEmbedProject(source: string, files?: GlPythonFile[], mainFile?: s
 // Optional "?features=run,repl,visualize,…" from the macro's features=
 // option: which of the embed's own parts to show (here: the REPL, the
 // visualizer and the → chain export). Without it, everything shows - except
-// "coverage" (after Tests, what no example executed) and "listtree" (lists
-// that read as a tree drawn as one), which a course switches on explicitly.
+// "coverage" (after Tests, what no example executed), "listtree" (lists
+// that read as a tree drawn as one) and "tree" (the visualizer's mode
+// «Baum»), which a course switches on explicitly.
 const featureList = (() => {
   const list = new URLSearchParams(window.location.search).get('features')
   return list === null ? null : new Set(list.split(',').map((feature) => feature.trim()))
@@ -62,7 +63,7 @@ const visualizerMaxHeight = Math.max(Math.round(windowHeight * VISUALIZER_WINDOW
 
 function visualizerModeFromLocation(): VisualizerMode | undefined {
   const mode = new URLSearchParams(window.location.search).get('visualizer')
-  return mode === 'box' || mode === 'substitution' ? mode : undefined
+  return mode === 'box' || mode === 'substitution' || mode === 'tree' ? mode : undefined
 }
 
 // The UI language: the host's "?lang=" (e.g. the LiaScript course's), else
@@ -212,6 +213,7 @@ export function App() {
           export: features('export'),
           coverage: featureList?.has('coverage') ?? false,
           listTree: featureList?.has('listtree') ?? false,
+          tree: featureList?.has('tree') ?? false,
           emptyOutput: mode !== 'visual',
         }}
       />
