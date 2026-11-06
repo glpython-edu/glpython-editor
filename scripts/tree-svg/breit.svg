@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" width="619.2" height="139.2" viewBox="0 0 619.2 139.2" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">
+<title>['f', ['g', 'erstes', 'zweites'], ['h', 'drittes', 'viertes'], ['k', 'fünftes']]</title>
+<rect x="0.5" y="0.5" width="618.2" height="138.2" rx="8" fill="#FFFFFF" stroke="#D1D5DB"/>
+<line x1="338.4" y1="37.6" x2="122.4" y2="56.8" stroke="#6B7280" stroke-width="1"/>
+<line x1="122.4" y1="82.4" x2="60" y2="101.6" stroke="#6B7280" stroke-width="1"/>
+<line x1="122.4" y1="82.4" x2="180" y2="101.6" stroke="#6B7280" stroke-width="1"/>
+<line x1="338.4" y1="37.6" x2="367.2" y2="56.8" stroke="#6B7280" stroke-width="1"/>
+<line x1="367.2" y1="82.4" x2="304.8" y2="101.6" stroke="#6B7280" stroke-width="1"/>
+<line x1="367.2" y1="82.4" x2="429.6" y2="101.6" stroke="#6B7280" stroke-width="1"/>
+<line x1="338.4" y1="37.6" x2="554.4" y2="56.8" stroke="#6B7280" stroke-width="1"/>
+<line x1="554.4" y1="82.4" x2="554.4" y2="101.6" stroke="#6B7280" stroke-width="1"/>
+<rect x="324.5" y="12.5" width="27.8" height="24.6" rx="4" fill="#F3F4F6" stroke="#6B7280" stroke-width="1"/>
+<text x="338.4" y="24.8" dominant-baseline="central" text-anchor="middle" fill="#1F3A5F" font-weight="600" textLength="9.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">f</text>
+<rect x="108.5" y="57.3" width="27.8" height="24.6" rx="4" fill="#F3F4F6" stroke="#6B7280" stroke-width="1"/>
+<text x="122.4" y="69.6" dominant-baseline="central" text-anchor="middle" fill="#1F3A5F" font-weight="600" textLength="9.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">g</text>
+<rect x="12.5" y="102.1" width="95" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="60" y="114.4" dominant-baseline="central" text-anchor="middle" fill="#8A3B12" textLength="76.8" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'erstes'</text>
+<rect x="127.7" y="102.1" width="104.6" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="180" y="114.4" dominant-baseline="central" text-anchor="middle" fill="#8A3B12" textLength="86.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'zweites'</text>
+<rect x="353.3" y="57.3" width="27.8" height="24.6" rx="4" fill="#F3F4F6" stroke="#6B7280" stroke-width="1"/>
+<text x="367.2" y="69.6" dominant-baseline="central" text-anchor="middle" fill="#1F3A5F" font-weight="600" textLength="9.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">h</text>
+<rect x="252.5" y="102.1" width="104.6" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="304.8" y="114.4" dominant-baseline="central" text-anchor="middle" fill="#8A3B12" textLength="86.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'drittes'</text>
+<rect x="377.3" y="102.1" width="104.6" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="429.6" y="114.4" dominant-baseline="central" text-anchor="middle" fill="#8A3B12" textLength="86.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'viertes'</text>
+<rect x="540.5" y="57.3" width="27.8" height="24.6" rx="4" fill="#F3F4F6" stroke="#6B7280" stroke-width="1"/>
+<text x="554.4" y="69.6" dominant-baseline="central" text-anchor="middle" fill="#1F3A5F" font-weight="600" textLength="9.6" lengthAdjust="spacingAndGlyphs" xml:space="preserve">k</text>
+<rect x="502.1" y="102.1" width="104.6" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="554.4" y="114.4" dominant-baseline="central" text-anchor="middle" fill="#8A3B12" textLength="86.4" lengthAdjust="spacingAndGlyphs" xml:space="preserve">'fünftes'</text>
+</svg>

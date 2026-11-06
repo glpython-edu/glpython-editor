@@ -10,14 +10,22 @@
   "types": "./dist/src/index.d.ts",
   "files": [
     "dist",
+    "bin",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "bin": {
+    "glpython-tree": "./bin/glpython-tree.mjs"
+  },
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./style.css": "./dist/style.css"
+    "./style.css": "./dist/style.css",
+    "./tree-svg": {
+      "types": "./dist/src/treeSvg.d.ts",
+      "import": "./dist/tree-svg.js"
+    }
   },
   "scripts": {
     "dev": "vite build --watch",
@@ -31,6 +39,7 @@
     "test:console": "node scripts/check-console-browser.mjs",
     "test:layout": "node --experimental-strip-types --no-warnings scripts/check-tree-layout.mjs",
     "test:tree": "node --experimental-strip-types --no-warnings scripts/check-tree-mode.mjs",
+    "test:svg": "node --experimental-strip-types --no-warnings scripts/check-tree-svg.mjs",
     "test:runtime": "python3 -B scripts/check-runtime-columns.py && python3 -B scripts/check-runtime-values.py && python3 -B scripts/check-runtime-doctests.py && python3 -B scripts/check-runtime-coverage.py && python3 -B scripts/check-runtime-calls.py && python3 -B scripts/check-runtime-hints.py && python3 -B scripts/check-runtime-fidelity.py && python3 -B scripts/check-runtime-replay.py && python3 -B scripts/check-runtime-imports.py && python3 -B scripts/check-runtime-repl.py && python3 -B scripts/check-runtime-input.py && python3 -B scripts/check-runtime-lists.py && python3 -B scripts/check-runtime-main.py && python3 -B scripts/check-runtime-trees.py && python3 -B scripts/check-runtime-box-reasons.py",
     "prepare": "npm run build"
   },
@@ -39,6 +48,12 @@
     "lucide-react": "^1.47.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
+  },
+  "peerDependenciesMeta": {
+    "@monaco-editor/react": { "optional": true },
+    "lucide-react": { "optional": true },
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
   },
   "devDependencies": {
     "@monaco-editor/react": "^4.7.0",

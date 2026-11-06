@@ -30,6 +30,9 @@ jobs:
       - run: npm run build:embed
       # Builds the library again and checks the embed protocol against dist/.
       - run: npm run test:protocol
+      # The static tree pictures (renderTreeSvg, glpython-tree) against their
+      # snapshots, treeLayout's positions and CPython's repr, with that build.
+      - run: npm run test:svg
       # The hints' wording in German and English, against that build.
       - run: npm run test:hints
       # The runtime under CPython: the visualizer's columns, docstrings,

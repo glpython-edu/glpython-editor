@@ -237,6 +237,48 @@ tidy-tree algorithm for nodes of different widths (`src/treeLayout.ts`,
 checked against [d3-flextree](https://github.com/Klortho/d3-flextree)), in
 characters of the code font, so a tree scales with the text around it.
 
+### Static tree pictures (`glpython-editor/tree-svg`, `glpython-tree`)
+
+For slides, handouts and quiz options, a list that reads as a tree can also be
+drawn as a static SVG file, without a browser: the same tree rule and layout as
+`listTree`, the same look (solid node boxes, dashed leaf boxes, the light
+theme's colours) on a light card with rounded corners, so the picture reads the
+same on a light and a dark page.
+
+```js
+import { renderTreeSvg } from 'glpython-editor/tree-svg'
+
+const svg = renderTreeSvg("['+', 2, ['*', 3, 4]]", { mark: ["['*', 3, 4]"], lang: 'de' })
+```
+
+```sh
+npx glpython-tree "['+', 2, ['*', 3, 4]]" --mark "['*', 3, 4]" -o baum.svg
+```
+
+- **Input:** the list as Python writes it: numbers (also negative and
+  decimal), strings in single or double quotes with Python's escapes, `True`,
+  `False`, `None`, lists and tuples. Leaves read as Python's repr writes them
+  (`2.50` → `2.5`, `"it's"`). A single value is a tree of one leaf.
+- **`mark`:** subtrees to highlight, written the same way (the accent colour on
+  their boxes and the edges between them; the whole tree marks all of it). A
+  mark that isn't a subtree, or occurs more than once, is an error.
+- **`markRoot`:** the root node's box alone (not its edges or children), e.g.
+  for the operator computed last; it combines with `mark`, and marks the leaf
+  of a single value. In the description: «– markiert: Wurzel» / «– marked:
+  root» (first, before the marked subtrees). `glpython-tree --mark-root`.
+- **`fontSize`** in pixels (default 16), **`lang`** (`en`, `de`) for the
+  description. The picture is `role="img"` with a `<title>`: the list, and
+  «– markiert: …» / «– marked: …» for the marks.
+- **Text and errors:** widths are in characters of the code font, as on screen;
+  each text is fitted to its characters' width (`textLength`), so a monospace
+  font with other proportions doesn't overflow its box. Invalid input throws a
+  `TreeSvgError` naming the position; `glpython-tree` prints it and exits
+  with 1 (2 for wrong usage). Without a list it reads one from stdin.
+- **Deterministic:** the same input and options always give the same bytes.
+
+Long labels aren't shortened, unlike the visualizer's trees.
+`npm run test:svg` checks the pictures against `scripts/tree-svg/`.
+
 ### Copying the evaluation as a → chain
 
 The **Copy → chain** item in the toolbar's **⋯ Options** menu copies the evaluation of the statement

@@ -18,6 +18,7 @@ npm run test:hints     # the error hints' wording (de/en) against the built dist
 npm run test:console   # the console in Chrome with Pyodide, against dist-embed/ (run build:embed first)
 npm run test:layout    # the trees' layout (src/treeLayout.ts) against d3-flextree (a devDependency, only for this check)
 npm run test:tree      # the visualizer's mode «Baum» (src/treeMode.ts) on traces of the runtime under CPython
+npm run test:svg       # the static tree pictures (src/treeSvg.ts, bin/glpython-tree.mjs) against scripts/tree-svg/ (-- --update after a deliberate change)
 npm run build:embed    # builds the iframe app + demo page into dist-embed/ (plus embed/public/: coi-serviceworker.js)
 npm run preview:embed  # serves dist-embed/ with COOP/COEP headers; open /demo.html
 ```
@@ -25,6 +26,8 @@ npm run preview:embed  # serves dist-embed/ with COOP/COEP headers; open /demo.h
 `npm run dev:embed` currently 404s: `embed/index.html` loads `../src/embed/main.tsx`, which lies outside the Vite root, so only the build works. Use `build:embed` + `preview:embed`.
 
 There is no unit test framework. The automated checks are `test:protocol` (plain `node:assert` against the built `dist/index.js`; add protocol validation cases there) and `test:runtime` (plain Python scripts that exec `src/runtime/` under CPython 3.12, Pyodide's version; add runtime regression cases there). `.github/workflows/ci.yml` runs lint, both builds and the checks on every pull request and on pushes to `main`. The one browser check is `test:console` (`scripts/check-console-browser.mjs`): `playwright-core` drives the installed Chrome (GitHub's runner has one) against `vite preview` of `dist-embed/`, through the embed protocol, with Pyodide from its CDN; add browser regression cases there. Everything else that needs Pyodide in a browser (the worker, most of the UI) is not checked automatically. `npm run lint` has one known warning in `GlPythonWorkspace.tsx` (`react(immutability)` on the `cursor` variable in `Frame`).
+
+**Static tree pictures.** `src/treeSvg.ts` (`renderTreeSvg`) draws a list that reads as a tree as an SVG for a compile step in Node, built as its own entry `dist/tree-svg.js` (export `glpython-editor/tree-svg`, no React or Monaco) and run by `bin/glpython-tree.mjs`. It parses Python's literal syntax and writes leaves with Python's repr (`test:svg` compares with CPython), uses `layoutTree` and copies `TreeView`'s look with the light tokens as literals (a static file can't read `--glp-*`); keep the two in step. Output must stay byte-identical for the same input: fixed precision, no ids, no dates. The peer dependencies are optional so that a repo installing it only for this doesn't get React.
 
 **Licence.** MIT (`LICENSE`). `THIRD_PARTY_NOTICES.md` lists the third-party code in the repo and in the embed's bundle, with license texts (the build strips license comments, so `build:embed` copies `LICENSE` and the notices into `dist-embed/`). When a bundled dependency is added or changed, or code is copied in, update it: the embed's bundled packages are the `node_modules` paths in `dist-embed/assets/*.js.map`.
 
