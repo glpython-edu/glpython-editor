@@ -384,7 +384,10 @@
    is wider than the visualizer shows (ExpressionTreeBox sets the width). */
 .frame-tree { display: inline-flex; flex-direction: column; gap: 8px; max-width: 100%; margin: 2px 0; padding: 6px 8px; vertical-align: top; white-space: normal; background: var(--glp-bg); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); }
 .frame-tree-view { display: block; min-width: 0; }
-.frame-tree-boxes { display: block; white-space: pre; }
+.value-tree-box { position: absolute; width: max-content; transform: translateX(-50%); white-space: pre; }
+.value-tree-box > .frame-child-zone { display: block; }
+.value-tree-edge-label { position: absolute; line-height: 1; color: var(--glp-text-muted); font-family: var(--glp-font-code); white-space: pre; pointer-events: none; }
+.value-tree-probe { position: absolute; visibility: hidden; white-space: pre; }
 .value-tree-leaf--name { color: var(--glp-text); }
 .value-tree-leaf--code { color: var(--glp-text-muted); }
 .value-tree-leaf--value { font-weight: 600; }

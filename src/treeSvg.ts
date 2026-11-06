@@ -317,7 +317,7 @@ export function renderTree(text: string, options: TreeSvgOptions = {}): Rendered
     const node = placed.node
     const mark = isMarked(placed.key)
     const isNode = node.kind === 'node'
-    const label = isNode ? node.label : node.text
+    const label = isNode ? node.label : node.kind === 'leaf' ? node.text : ''
     const textColour = isNode ? COLOURS.nodeText : /^['"]/.test(label) ? COLOURS.stringText : /^-?\d/.test(label) ? COLOURS.numberText : COLOURS.leafText
     const fill = mark ? COLOURS.markFill : isNode ? COLOURS.nodeFill : COLOURS.leafFill
     const stroke = mark ? COLOURS.mark : isNode ? COLOURS.nodeStroke : COLOURS.leafStroke

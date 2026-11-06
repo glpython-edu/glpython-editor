@@ -646,6 +646,68 @@ try {
         console.error(`Baum: ${label}: ${error.message}`)
       }
     }
+    // P44: a call of the program's own labels its arguments' edges with the
+    // parameters; a call that stays a box sits in its node's place. Every
+    // step: one height, nothing overlapping, and positions that change only
+    // where the box opens and closes.
+    const callState = () => frame.locator('.embed-app').evaluate((app) => {
+      const tree = app.querySelector('.visualizer-canvas > .frame-box > .frame-code .value-tree')
+      if (!tree) return { height: Math.round(app.getBoundingClientRect().height), labels: null, nodes: null, overlap: null, box: null }
+      const items = [...tree.querySelectorAll(':scope > [data-tree-key], :scope > .value-tree-edge-label')]
+      const rects = items.map((item) => ({ name: item.dataset.treeKey ?? `label ${item.textContent}`, rect: (item.dataset.treeBoxKey ? item.firstElementChild ?? item : item).getBoundingClientRect() }))
+      const overlap = rects.flatMap((a, i) => rects.slice(i + 1).filter((b) => a.rect.left < b.rect.right - 0.5 && b.rect.left < a.rect.right - 0.5 && a.rect.top < b.rect.bottom - 0.5 && b.rect.top < a.rect.bottom - 0.5).map((b) => `${a.name} / ${b.name}`))
+      const box = tree.querySelector(':scope > [data-tree-box-key]')
+      return {
+        height: Math.round(app.getBoundingClientRect().height),
+        labels: [...tree.querySelectorAll(':scope > .value-tree-edge-label')].map((label) => label.textContent),
+        nodes: Object.fromEntries([...tree.querySelectorAll(':scope > [data-tree-key]')].map((node) => [node.dataset.treeKey, `${node.style.left} ${node.style.top}`])),
+        overlap,
+        box: box ? { top: box.style.top, besides: [...tree.querySelectorAll(':scope > [data-tree-key]:not([data-tree-box-key])')].filter((node) => node.style.top === box.style.top).map((node) => node.textContent) } : null,
+      }
+    })
+    const allStates = async (program) => {
+      await page.evaluate((source) => window.send('visualize', source), program)
+      await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      await mode('Baum')
+      await measured(frame)
+      const first = frame.locator('.visualizer-controls button').nth(0)
+      if (await first.isEnabled()) await first.click()
+      const states = [await callState()]
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      while (await next.isEnabled()) {
+        await next.click()
+        // After the step's animations (a box grows in, nodes glide).
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        states.push(await callState())
+      }
+      return states
+    }
+    try {
+      const states = await allStates('def summe(x, y):\n    return x + y\n\nsumme(2 + 2, 3 * 4)\nlen([1, 2]) + max(2, 5)\n')
+      const labelled = states.map((state) => state.labels?.join(',') ?? null).filter((labels) => labels !== null).filter((labels, index, all) => labels !== all[index - 1])
+      assert.deepEqual(labelled, ['x,y', '', ], 'x and y until the call is replaced, then none (nor for len and max)')
+      assert.deepEqual(states.filter((state) => state.labels?.join(',') === 'x,y').length, 3, 'on the three steps before the call is replaced')
+      assert.deepEqual(states.flatMap((state) => state.overlap ?? []), [], 'nothing overlaps')
+      assert.deepEqual([...new Set(states.map((state) => state.height))], [states[0].height], 'one height')
+      console.log('Baum: parameter names on the edges: ok')
+    } catch (error) {
+      failed += 1
+      console.error(`Baum: parameter names on the edges: ${error.message}`)
+    }
+    try {
+      const states = await allStates('def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5]) + 1\n')
+      const withBox = states.filter((state) => state.box)
+      assert.ok(withBox.length > 10, `the box is open for ${withBox.length} steps`)
+      assert.deepEqual([...new Set(withBox.map((state) => JSON.stringify(state.box)))], [JSON.stringify({ top: '2.8em', besides: ['1'] })], 'the box on the row below +, the leaf 1 beside it')
+      assert.deepEqual([...new Set(withBox.map((state) => JSON.stringify(state.nodes)))].length, 1, 'nothing moves while the box is open')
+      assert.deepEqual(states.flatMap((state) => state.overlap ?? []), [], 'nothing overlaps')
+      assert.deepEqual([...new Set(states.map((state) => state.height))], [states[0].height], 'one height')
+      console.log('Baum: the box in the call node\'s place: ok')
+    } catch (error) {
+      failed += 1
+      console.error(`Baum: the box in the call node's place: ${error.message}`)
+    }
     // The hint at a call that stays a box, in both modes.
     for (const name of ['Ersetzung', 'Baum']) {
       try {
