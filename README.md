@@ -262,6 +262,10 @@ npx glpython-tree "['+', 2, ['*', 3, 4]]" --mark "['*', 3, 4]" -o baum.svg
 - **`mark`:** subtrees to highlight, written the same way (the accent colour on
   their boxes and the edges between them; the whole tree marks all of it). A
   mark that isn't a subtree, or occurs more than once, is an error.
+- **`markRoot`:** the root node's box alone (not its edges or children), e.g.
+  for the operator computed last; it combines with `mark`, and marks the leaf
+  of a single value. In the description: «– markiert: Wurzel» / «– marked:
+  root» (first, before the marked subtrees). `glpython-tree --mark-root`.
 - **`fontSize`** in pixels (default 16), **`lang`** (`en`, `de`) for the
   description. The picture is `role="img"` with a `<title>`: the list, and
   «– markiert: …» / «– marked: …» for the marks.

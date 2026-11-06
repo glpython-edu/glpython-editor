@@ -1,7 +1,8 @@
 // Check of the static tree pictures (src/treeSvg.ts, P43): renderTreeSvg
 // draws the trees of the layout check (the course's parser output and two
-// uneven trees), a mark on a subtree, the whole tree marked and a single
-// value exactly as the snapshots in scripts/tree-svg/ - byte for byte, and
+// uneven trees), a mark on a subtree, the whole tree marked, a single value,
+// and the root node alone marked (also with a subtree, and on a single
+// value) exactly as the snapshots in scripts/tree-svg/ - byte for byte, and
 // the same twice - with every box where treeLayout.ts places its node (the
 // positions TreeView uses). It reads lists as Python writes them, with
 // Python's repr for the leaves (compared with CPython's), and reports
@@ -42,6 +43,9 @@ const cases = [
   ['marked-subtree', "['+', 2, ['*', 3, 4]]", { mark: ["['*', 3, 4]"], lang: 'de' }],
   ['marked-root', "['+', 2, ['*', 3, 4]]", { mark: ["['+', 2, ['*', 3, 4]]"] }],
   ['single-value', '42'],
+  ['marked-root-node', "['+', 2, ['*', 3, 4]]", { markRoot: true, lang: 'de' }],
+  ['marked-root-node-and-subtree', "['+', 2, ['*', 3, 4]]", { markRoot: true, mark: ["['*', 3, 4]"], lang: 'de' }],
+  ['marked-single-value', '42', { markRoot: true }],
 ]
 for (const [name, text, options] of cases) {
   check(`${name}: as the snapshot, the same twice`, () => {
@@ -72,6 +76,17 @@ check('the picture is described: role="img", <title> with the list and its marks
   assert.match(svg, /^<svg [^>]*role="img"/)
   assert.match(svg, /<title>\['\+', 2, \['\*', 3, 4\]\] – markiert: \['\*', 3, 4\]<\/title>/)
   assert.match(renderTreeSvg("['f', 'a<b&c']"), /<title>\['f', 'a&lt;b&amp;c'\]<\/title>/)
+})
+check('markRoot: the root box alone, described as the root', () => {
+  const svg = renderTreeSvg("['+', 2, ['*', 3, 4]]", { markRoot: true, lang: 'de' })
+  assert.equal(svg.match(/fill="#DCE6F2"/g)?.length, 1, 'one marked box')
+  assert.doesNotMatch(svg, /<line [^>]*stroke="#1F3A5F"/, 'no marked edge')
+  assert.match(svg, /<title>\['\+', 2, \['\*', 3, 4\]\] – markiert: Wurzel<\/title>/)
+  const both = renderTreeSvg("['+', 2, ['*', 3, 4]]", { markRoot: true, mark: ["['*', 3, 4]"], lang: 'de' })
+  assert.equal(both.match(/fill="#DCE6F2"/g)?.length, 4, 'the root and the subtree')
+  assert.equal(both.match(/<line [^>]*stroke="#1F3A5F"/g)?.length, 2, "only the subtree's edges")
+  assert.match(both, /– markiert: Wurzel; \['\*', 3, 4\]<\/title>/)
+  assert.match(renderTreeSvg('42', { markRoot: true }), /<title>42 – marked: root<\/title>/)
 })
 check('the tree rule: labels without quotes, strings with, other lists as leaves', () => {
   const { nodes } = renderTree(`["+", "a", [1, 2], ['g'], ["Anna", 'Ben'], True, -2.5, None, (1, 'x')]`)
@@ -112,6 +127,7 @@ if (existsSync(new URL('../dist/tree-svg.js', import.meta.url))) {
     assert.equal(wrong.status, 1)
     assert.match(wrong.stderr, /occurs 2 times/)
     assert.equal(command(['--lang', 'fr', '1']).status, 2)
+    assert.equal(command(["['+', 2, ['*', 3, 4]]", '--mark-root', '--lang', 'de']).stdout, readFileSync(snapshot('marked-root-node'), 'utf8'), '--mark-root')
   })
 } else {
   console.log('glpython-tree: skipped (no build; npm run build first)')

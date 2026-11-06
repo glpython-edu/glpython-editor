@@ -2,21 +2,24 @@
 // Draws a list that reads as a tree as an SVG picture (see src/treeSvg.ts):
 //
 //   glpython-tree "['+', 2, ['*', 3, 4]]" --mark "['*', 3, 4]" -o baum.svg
+//   glpython-tree "['+', 2, ['*', 3, 4]]" --mark-root -o wurzel.svg
 //
 // Without -o, the SVG goes to stdout; without a list, it is read from stdin.
-// Options: --mark <subtree> (repeatable), --lang en|de (the picture's
+// Options: --mark <subtree> (repeatable), --mark-root (the root node's box
+// alone), --lang en|de (the picture's
 // description), --font-size <px>. Exit code 1 on invalid input or a mark
 // that isn't exactly one subtree, 2 on wrong usage.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { renderTreeSvg, TreeSvgError } from '../dist/tree-svg.js'
 
-const usage = 'Usage: glpython-tree "<list as Python writes it>" [--mark "<subtree>"]... [--lang en|de] [--font-size <px>] [-o <file.svg>]'
+const usage = 'Usage: glpython-tree "<list as Python writes it>" [--mark "<subtree>"]... [--mark-root] [--lang en|de] [--font-size <px>] [-o <file.svg>]'
 const args = process.argv.slice(2)
 const marks = []
 let text = null
 let output = null
 let lang = 'en'
 let fontSize
+let markRoot = false
 for (let index = 0; index < args.length; index++) {
   const arg = args[index]
   const next = () => {
@@ -27,6 +30,7 @@ for (let index = 0; index < args.length; index++) {
     return args[++index]
   }
   if (arg === '--mark' || arg === '-m') marks.push(next())
+  else if (arg === '--mark-root') markRoot = true
   else if (arg === '-o' || arg === '--output') output = next()
   else if (arg === '--lang') lang = next()
   else if (arg === '--font-size') fontSize = Number(next())
@@ -48,7 +52,7 @@ if (fontSize !== undefined && !(fontSize > 0)) {
   process.exit(2)
 }
 try {
-  const svg = renderTreeSvg(text ?? readFileSync(0, 'utf8').trim(), { mark: marks, lang, fontSize })
+  const svg = renderTreeSvg(text ?? readFileSync(0, 'utf8').trim(), { mark: marks, markRoot, lang, fontSize })
   if (output) writeFileSync(output, svg)
   else process.stdout.write(svg)
 } catch (error) {

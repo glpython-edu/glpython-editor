@@ -218,6 +218,9 @@ export type TreeSvgOptions = {
   // Subtrees to highlight, each written as in the input; each must occur
   // exactly once (the whole tree marks the whole tree).
   mark?: string[]
+  // Also the root node's box alone (not its edges or children), e.g. for
+  // "the operator computed last is at the top"; on a single value, its leaf.
+  markRoot?: boolean
   // The code font's size in pixels (default 16).
   fontSize?: number
   // The language of the picture's description: "… – marked: …" (en) or
@@ -285,7 +288,8 @@ export function renderTree(text: string, options: TreeSvgOptions = {}): Rendered
     markTexts.push(wanted)
   }
   const layout = layoutTree(tree)
-  const isMarked = (key: string) => [...marked].some((root) => root === '' || key === root || key.startsWith(`${root}.`))
+  const inMarkedSubtree = (key: string) => [...marked].some((root) => root === '' || key === root || key.startsWith(`${root}.`))
+  const isMarked = (key: string) => inMarkedSubtree(key) || (options.markRoot === true && key === '')
 
   const fontSize = options.fontSize ?? 16
   const em = fontSize
@@ -296,7 +300,8 @@ export function renderTree(text: string, options: TreeSvgOptions = {}): Rendered
   const top = (placed: PlacedNode) => CARD_PADDING + placed.depth * ROW_HEIGHT * em
   const byKey = new Map(layout.nodes.map((placed) => [placed.key, placed]))
 
-  const description = `${pythonRepr(value)}${markTexts.length > 0 ? ` – ${options.lang === 'de' ? 'markiert' : 'marked'}: ${markTexts.join('; ')}` : ''}`
+  const markNames = [...(options.markRoot ? [options.lang === 'de' ? 'Wurzel' : 'root'] : []), ...markTexts]
+  const description = `${pythonRepr(value)}${markNames.length > 0 ? ` – ${options.lang === 'de' ? 'markiert' : 'marked'}: ${markNames.join('; ')}` : ''}`
   const lines: string[] = []
   lines.push(`<svg xmlns="http://www.w3.org/2000/svg" role="img" width="${number(width)}" height="${number(height)}" viewBox="0 0 ${number(width)} ${number(height)}" font-family="${FONT}" font-size="${number(fontSize)}">`)
   lines.push(`<title>${escapeXml(description)}</title>`)
@@ -305,7 +310,7 @@ export function renderTree(text: string, options: TreeSvgOptions = {}): Rendered
     const parent = placed.parentKey === null ? undefined : byKey.get(placed.parentKey)
     if (!parent) continue
     // An edge inside a marked subtree is marked too.
-    const mark = isMarked(placed.key) && isMarked(parent.key)
+    const mark = inMarkedSubtree(placed.key) && inMarkedSubtree(parent.key)
     lines.push(`<line x1="${number(CARD_PADDING + parent.x * ch)}" y1="${number(top(parent) + NODE_HEIGHT * em)}" x2="${number(CARD_PADDING + placed.x * ch)}" y2="${number(top(placed))}" stroke="${mark ? COLOURS.mark : COLOURS.edge}" stroke-width="${mark ? 2 : 1}"/>`)
   }
   for (const placed of layout.nodes) {
