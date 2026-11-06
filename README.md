@@ -482,6 +482,12 @@ by its parent:
 />
 ```
 
+Each of the built-in buttons has its own switch: `run` (▶; without it, the
+button still appears as ■ Stop while Python is busy, e.g. with Tests),
+`tests`, `visualization` and `resetOutput`; `repl: false` hides the REPL's
+input line but keeps the console (output, and `input()`'s line when a program
+asks). A host can thus show e.g. «Tests» without ▶, or ▶ without «Tests».
+
 With `emptyOutput: false` (the embed's `visual` mode), a visualization whose
 program prints nothing and raises no error has no output panel instead of
 «(Keine Ausgabe)», so short visualizations take less space. It is decided for
