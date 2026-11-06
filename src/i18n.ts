@@ -50,6 +50,9 @@ export const coreStrings: Record<UiLocale, CoreStrings> = {
     visualizerModeSubstitution: 'Substitution',
     visualizerBoxHint: 'The box shows which return is executed.',
     visualizerModeTree: 'Tree',
+    markdownViewLabel: 'Show the file',
+    markdownPage: 'View',
+    markdownText: 'Text',
     visualizerBoxReason: (reason) => ({
       locals: 'has local variables – the call is shown as a box.',
       branches: 'uses if to choose what runs – the call is shown as a box.',
@@ -145,6 +148,9 @@ export const coreStrings: Record<UiLocale, CoreStrings> = {
     visualizerModeSubstitution: 'Ersetzung',
     visualizerBoxHint: 'Der Kasten zeigt, welches return ausgeführt wird.',
     visualizerModeTree: 'Baum',
+    markdownViewLabel: 'Datei zeigen',
+    markdownPage: 'Ansicht',
+    markdownText: 'Text',
     visualizerBoxReason: (reason) => ({
       locals: 'hat lokale Variablen – der Aufruf wird als Kasten gezeigt.',
       branches: 'wählt mit if, was ausgeführt wird – der Aufruf wird als Kasten gezeigt.',

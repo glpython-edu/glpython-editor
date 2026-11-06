@@ -71,7 +71,35 @@
 .editor-tab.active .tab-file-icon { color: var(--glp-accent); }
 .tab-close { display: inline-flex; margin-left: auto; padding: 3px; color: var(--glp-text-muted); border-radius: var(--glp-radius); }
 .tab-close:hover { color: var(--glp-text); background: var(--glp-border); }
-.editor-wrap { min-height: 0; min-width: 0; flex: 1; }
+.editor-wrap { position: relative; min-height: 0; min-width: 0; flex: 1; }
+/* A Markdown file as a page (renderMarkdown): over the editor, which stays
+   mounted below it; its switch at the end of the tabs. */
+.editor-host { height: 100%; }
+.markdown-switch { display: flex; align-items: center; gap: 2px; margin-left: auto; padding: 0 8px; flex-shrink: 0; }
+.markdown-switch button { padding: 4px 10px; border: 1px solid var(--glp-border-control); border-radius: var(--glp-radius); color: var(--glp-text); background: var(--glp-bg); font: 600 12px/1.2 var(--glp-font-ui); cursor: pointer; }
+.markdown-switch button[aria-pressed="true"] { color: var(--glp-on-accent); background: var(--glp-accent); border-color: var(--glp-accent); }
+.markdown-switch button:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: 2px; }
+.markdown-page { position: absolute; inset: 0; z-index: 2; overflow: auto; padding: 20px 28px 32px; color: var(--glp-text); background: var(--glp-bg); font: 15px/1.6 var(--glp-font-ui); overflow-wrap: break-word; }
+.markdown-page:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: -2px; }
+.markdown-page > :first-child { margin-top: 0; }
+.markdown-page h1, .markdown-page h2, .markdown-page h3, .markdown-page h4 { margin: 1.4em 0 .5em; line-height: 1.3; color: var(--glp-text); }
+.markdown-page h1 { font-size: 1.6em; }
+.markdown-page h2 { font-size: 1.3em; padding-bottom: .2em; border-bottom: 1px solid var(--glp-border); }
+.markdown-page h3 { font-size: 1.1em; }
+.markdown-page p, .markdown-page ul, .markdown-page ol, .markdown-page blockquote, .markdown-page table, .markdown-page pre { margin: 0 0 1em; }
+.markdown-page ul, .markdown-page ol { padding-left: 1.6em; }
+.markdown-page li + li { margin-top: .25em; }
+.markdown-page a { color: var(--glp-info); }
+.markdown-page code { padding: 1px 5px; color: var(--glp-text); background: var(--glp-surface); border-radius: var(--glp-radius); font: .92em var(--glp-font-code); }
+.markdown-page pre { overflow-x: auto; padding: 12px 14px; background: var(--glp-surface); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); }
+.markdown-page pre code { padding: 0; background: none; font-size: 14px; line-height: 1.5; }
+.markdown-page blockquote { padding: 4px 14px; color: var(--glp-text-muted); border-left: 3px solid var(--glp-border-control); }
+.markdown-page table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.markdown-page th, .markdown-page td { padding: 6px 10px; border: 1px solid var(--glp-border); text-align: left; vertical-align: top; }
+.markdown-page th { background: var(--glp-surface); }
+.markdown-page img { max-width: 100%; }
+.markdown-page hr { border: 0; border-top: 1px solid var(--glp-border); margin: 1.5em 0; }
+@media (max-width: 700px) { .markdown-page { padding: 16px; } }
 
 .output-panel { min-height: 142px; background: var(--glp-bg); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); overflow: hidden; }
 .output-heading { height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--glp-border); }
