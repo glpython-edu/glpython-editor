@@ -37,10 +37,12 @@ export default defineConfig({
     }),
   ],
   build: {
+    // tree-svg.js: renderTreeSvg on its own (no React, no Monaco), for
+    // Node scripts and the glpython-tree command (bin/).
     lib: {
-      entry: `${rootDir}src/index.ts`,
+      entry: { index: `${rootDir}src/index.ts`, 'tree-svg': `${rootDir}src/treeSvg.ts` },
       formats: ['es'],
-      fileName: () => 'index.js',
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     sourcemap: true,
     rollupOptions: {

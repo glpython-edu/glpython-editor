@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" width="62.4" height="49.6" viewBox="0 0 62.4 49.6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">
+<title>42</title>
+<rect x="0.5" y="0.5" width="61.4" height="48.6" rx="8" fill="#FFFFFF" stroke="#D1D5DB"/>
+<rect x="12.5" y="12.5" width="37.4" height="24.6" rx="4" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="31.2" y="24.8" dominant-baseline="central" text-anchor="middle" fill="#0F5F7A" textLength="19.2" lengthAdjust="spacingAndGlyphs" xml:space="preserve">42</text>
+</svg>
