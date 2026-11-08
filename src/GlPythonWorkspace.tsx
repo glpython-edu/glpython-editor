@@ -1058,7 +1058,9 @@ function Frame(props: FrameProps) {
     )
   }
 
-  const showBoxHint = substitutionMode && scope.kind === 'call' && !insideBox
+  // Not in the tree mode: there the box stands in the call's place, which
+  // shows by itself that the call stays a box.
+  const showBoxHint = substitutionMode && trees === null && scope.kind === 'call' && !insideBox
   const boxReason = showBoxHint ? trace.find((step) => step.kind === 'call-enter' && step.frameId === frameId)?.boxReason ?? null : null
   return (
     <div className={`frame-box${isModule ? ' frame-box--root' : ''}`} data-frame-id={frameId}>
