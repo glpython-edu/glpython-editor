@@ -99,6 +99,16 @@ Deep chains of open calls, such as a recursion without a base case, collapse
 their middle boxes into one "… N more calls of f(x) …" marker
 (`visualizerCollapsedCalls`), so the layout stays usable.
 
+A call ends as its value, `None` too: also a call that is a whole statement
+(a line of the program, a REPL input, a doctest example), when it calls the
+learner's own function - a `def` or lambda of the project's files, of a
+library loaded with it, a method of their class - so a function without a
+matching `return` visibly gives `None`. Only a built-in, a method of a
+built-in type or a function of a module that comes with Python or glpython
+(`print(...)`, `xs.append(x)`, `random.shuffle(xs)`, `gturtle`) keeps its call
+text as a statement, where `None` would only be noise. The console still
+shows nothing for `None`, as CPython's REPL.
+
 ### Box and substitution mode
 
 The visualizer's toolbar is one line: first step, previous step, next step,
