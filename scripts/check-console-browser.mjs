@@ -708,7 +708,8 @@ try {
       failed += 1
       console.error(`Baum: the box in the call node's place: ${error.message}`)
     }
-    // The hint at a call that stays a box, in both modes.
+    // The hint at a call that stays a box: in «Ersetzung», not in «Baum»
+    // (the box in the call's place says it).
     for (const name of ['Ersetzung', 'Baum']) {
       try {
         await mode(name)
@@ -718,10 +719,15 @@ try {
         for (let index = 0; index < 6; index++) await next.click()
         // Not a closing box's fading copy (.visualizer-closing-boxes).
         const hint = frame.locator('.visualizer-view > .visualizer-canvas > .frame-box .frame-hint[data-box-reason="locals"]')
-        await hint.waitFor({ timeout: 5000 })
-        assert.equal(await hint.innerText(), 'notenschnitt hat lokale Variablen – der Aufruf wird als Kasten gezeigt.')
+        if (name === 'Ersetzung') {
+          await hint.waitFor({ timeout: 5000 })
+          assert.equal(await hint.innerText(), 'notenschnitt hat lokale Variablen – der Aufruf wird als Kasten gezeigt.')
+        } else {
+          await frame.locator('.visualizer-view > .visualizer-canvas [data-tree-box-key] .frame-box').first().waitFor({ timeout: 5000 })
+          assert.equal(await frame.locator('.visualizer-view > .visualizer-canvas .frame-hint').count(), 0, 'no hint in «Baum»')
+        }
         assert.equal(await frame.locator('.visualizer-mode button', { hasText: name }).getAttribute('aria-pressed'), 'true')
-        console.log(`Baum: the hint at the box in «${name}»: ok`)
+        console.log(`Baum: the hint at the box in «${name}»${name === 'Baum' ? ': none' : ''}: ok`)
       } catch (error) {
         failed += 1
         console.error(`Baum: the hint in «${name}»: ${error.message}`)

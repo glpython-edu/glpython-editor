@@ -145,9 +145,10 @@ or `while`'s condition; not a bare name or literal):
    becomes its value with its last child. A call with a single
    `return <expression>` is replaced by that expression's tree. Any other
    call, once its box opens, has the box in its node's place - the parent's
-   edge leads to the box's top, its siblings stay on their row - with the
-   note why it isn't replaced at its top; inside it, each line has its own
-   tree and calls of their own boxes.
+   edge leads to the box's top, its siblings stay on their row - without
+   the note of the substitution mode (the box in the call's place shows it
+   stays a box); inside it, each line has its own tree and calls of their
+   own boxes.
 3. **Close:** one step from the trivial tree to the value in the line.
 
 For a call of a function of the program's own, each edge to an argument is
@@ -298,8 +299,9 @@ Long labels aren't shortened, unlike the visualizer's trees.
 
 ### Copying the evaluation as a → chain
 
-The **Copy → chain** item in the toolbar's **⋯ Options** menu copies the evaluation of the statement
-the scrubber is on (for a visualized REPL entry: that input) in the course's
+The **Copy → chain** item in the toolbar's **⋯ Options** menu copies the whole evaluation of the
+statement the scrubber is on - from its first step to its value, at whichever of its steps the
+scrubber is (for a visualized REPL entry: that input) - in the course's
 paper notation: its expression, then one line per change, each starting with
 `→`, taking the same steps as the visualizer. A call to a function with a single
 `return <expression>` is replaced as in substitution mode. Any other call is

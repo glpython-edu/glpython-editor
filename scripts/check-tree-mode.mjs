@@ -163,5 +163,18 @@ check('notenschnitt([4, 5, 4.5]) + 1: the box in the call node\'s place, 1 besid
   assert.ok(episode.expansions.includes(enter.step) && episode.expansions.includes(close.step), 'laid out again where the box opens and closes')
 })
 
+check('the → chain export: the whole statement, wherever the scrubber is in it', () => {
+  for (const name of ['shortForm', 'locals', 'boxInPlace']) {
+    const result = results[name]
+    const nodeIndexByFile = new Map(Object.entries(result.ast).map(([path, file]) => [path, indexAstNodes(file)]))
+    const chainAt = (step) => buildEvaluationChain({ trace: result.trace, ast: result.ast, nodeIndexByFile, sources: { 'main.py': programs[name] }, rootPath: 'main.py', step, errorMessage: null, comments: false, strings: { conditionComment: () => '', localsComment: '' } })
+    const last = result.trace.at(-1)
+    const full = chainAt(last)
+    const ofStatement = result.trace.filter((step) => chainAt(step) !== null && chainAt(step).split('\n')[0] === full.split('\n')[0])
+    assert.ok(ofStatement.length > 3, `${name}: steps of the statement`)
+    for (const step of [ofStatement[0], ofStatement[Math.floor(ofStatement.length / 2)], ofStatement.at(-1)]) assert.equal(chainAt(step), full, `${name}: at step ${step.step}`)
+  }
+})
+
 if (failed > 0) process.exit(1)
 console.log('Tree mode checks passed.')
