@@ -735,6 +735,76 @@ try {
     }
     await page.close()
   }
+  // P49: a call of the learner's own function that returns None shows None
+  // as its last step - a line of the program, a REPL input, a failing
+  // doctest example - in each mode; print(...) and xs.append(...) keep their
+  // call text. The console prints nothing for None.
+  {
+    const anwenden = "def anwenden(op, x, y):\n    \"\"\"\n    >>> anwenden('*', 3, 4)\n    12\n    \"\"\"\n    if op == '+':\n        return x + y\n"
+    const page = await openEmbed({}, '?features=run,repl,visualize,tests,tree&windowHeight=900')
+    const frame = page.frameLocator('#embed')
+    const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
+    // The root box's code at each step, a tree as its text.
+    const lines = () => frame.locator('.visualizer-view > .visualizer-canvas > .frame-box > .frame-code').evaluate((code) => {
+      for (const tree of code.querySelectorAll('.value-tree-scroll')) tree.replaceWith(`[${tree.getAttribute('aria-label')}]`)
+      return code.innerText
+    })
+    const steps = async () => {
+      await measured(frame)
+      const first = frame.locator('.visualizer-controls button').nth(0)
+      if (await first.isEnabled()) await first.click()
+      const seen = [await lines()]
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      while (await next.isEnabled()) {
+        await next.click()
+        seen.push(await lines())
+      }
+      return seen
+    }
+    // The line of the root box's code that holds the call (the box's own
+    // line numbers are separate lines of innerText).
+    const lineOf = (text, call) => text.split('\n').find((line, index, all) => line === call || all[index - 1] === call)
+    for (const name of ['Kasten', 'Ersetzung', 'Baum']) {
+      try {
+        await page.evaluate((source) => window.send('visualize', source), `${anwenden}\nxs = []\nanwenden('*', 3, 4)\nprint('x')\nxs.append(1)\n`)
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        await mode(name)
+        const seen = await steps()
+        const last = seen.at(-1).split('\n')
+        assert.equal(last[last.indexOf('10') + 1], 'None', 'a line of the program: anwenden(...) ends as None')
+        assert.equal(last[last.indexOf('11') + 1], "print('x')", 'print(...) keeps its text')
+        assert.equal(last[last.indexOf('12') + 1], 'xs.append(1)', 'xs.append(...) keeps its text')
+        assert.ok(seen.every((text) => !text.includes('[None]')), 'no tree of None alone')
+
+        await page.evaluate((source) => window.send('run', source), anwenden)
+        await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+        await enterRepl(frame, "anwenden('*', 3, 4)")
+        const entry = frame.locator('.repl-entry').last()
+        await entry.locator('.repl-entry-visualize:not([disabled])').waitFor({ timeout: 30000 })
+        assert.equal(await entry.locator('.repl-value').count(), 0, 'the console shows nothing for None')
+        assert.equal(await entry.innerText().then((text) => text.replace('Visualisieren', '').trim()), ">>> anwenden('*', 3, 4)", 'nothing printed')
+        await entry.locator('.repl-entry-visualize').click()
+        await mode(name)
+        const repl = (await steps()).map((text) => lineOf(text, "anwenden('*', 3, 4)") ?? text)
+        assert.equal(repl[0], "anwenden('*', 3, 4)", 'the REPL input starts as the call')
+        assert.equal(repl.at(-1).split('\n').at(-1), 'None', 'the REPL input ends as None')
+
+        await page.evaluate((source) => window.send('test', source), anwenden)
+        await frame.getByRole('button', { name: 'Beispiel visualisieren' }).click()
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        await mode(name)
+        const example = await steps()
+        // The call ends as None, the comparison below it.
+        assert.deepEqual(example.at(-1).split('\n').slice(-2), ['None', 'Erhalten: (Keine Ausgabe) · Erwartet: 12'], 'the failing example ends as None')
+        assert.equal(lineOf(example[0], "anwenden('*', 3, 4)"), "anwenden('*', 3, 4)", 'the example starts as the call')
+        console.log(`None of an own call, «${name}»: a line, a REPL input, a doctest example: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`None of an own call, «${name}»: ${error.message}`)
+      }
+    }
+    await page.close()
+  }
   // P37: the run file is __main__, in Pyodide too.
   {
     const page = await openEmbed({})

@@ -935,6 +935,22 @@ class _GlpythonFunction:
       _glpython_last_call_return = return_info
       _glpython_call_depth -= 1
 
+# The files of the traced project: their functions are the learner's own
+# (set by _glpython_trace_program). "<glpython>" is code of theirs the
+# visualizer compiled itself (a class body's methods), "<repl>" an earlier
+# REPL input's.
+_glpython_own_files = set()
+
+# Whether a callee is a function of the learner's own (a "def" or lambda of
+# the program, of one of its files or of a loaded library, also a method of
+# their class), not a built-in, a method of a built-in type or a function of
+# a module glpython or Python brings along (gturtle, random, ...).
+def _glpython_is_own_function(func):
+  if isinstance(func, _GlpythonFunction):
+    return True
+  code = getattr(getattr(func, "__func__", func), "__code__", None)
+  return code is not None and code.co_filename in _glpython_own_files
+
 def _eval_call(node, scope, suppress_none_result=False):
   global _glpython_pending_call_node, _glpython_last_call_frame_id
   func_ids = getattr(node, "_glpython_func_ids", None) or []
@@ -968,14 +984,15 @@ def _eval_call(node, scope, suppress_none_result=False):
   closes_frame_id = _glpython_last_call_frame_id
   _glpython_pending_call_node = None
   callee_name = getattr(func, "__name__", _glpython_node_source(node.func))
-  # A bare "f(...)" statement whose result nobody uses shouldn't have its
-  # call text replaced with the word "None" once it finishes - that's just
-  # visual noise, not insight (this is the overwhelmingly common case for
-  # side-effecting calls like print(...) or a student function with no
-  # return). Calls whose value IS used (an assignment, part of a bigger
-  # expression, etc.) still show "None" normally, since that's genuinely
-  # useful feedback there.
-  value_text = None if (suppress_none_result and value is None) else _glpython_safe_repr(value)
+  # A bare "f(...)" statement whose result nobody uses keeps its call text
+  # once it finishes when the callee is a built-in or a method of a built-in
+  # type (print(...), xs.append(x)): the word "None" would only be noise
+  # there. A call of the learner's own function shows its "None", even as a
+  # statement - it's what a function without a matching "return" gives, and
+  # what a doctest example or a REPL input compares or shows. Calls whose
+  # value is used (an assignment, part of a bigger expression, etc.) always
+  # show it.
+  value_text = None if (suppress_none_result and value is None and not _glpython_is_own_function(func)) else _glpython_safe_repr(value)
   return_info = _glpython_last_call_return if closes_frame_id is not None else None
   _glpython_record(node, "eval", f"{callee_name}(...)", value_text, _glpython_current_func(), closes_frame_id=closes_frame_id, extra=return_info)
   return value
@@ -1062,10 +1079,9 @@ def _exec_annassign(node, scope):
     _glpython_record(node, "exec", f"{_glpython_node_source(node.target)} = {_glpython_safe_repr(value)}", None, _glpython_current_func(), _glpython_snapshot_locals(scope))
 
 def _exec_expr(node, scope):
-  # A bare expression statement's value is always discarded by Python
-  # itself, so if it's a plain call ("f(...)" on its own line), tell
-  # _eval_call not to show "-> None" when that's all it computed - see the
-  # comment on _eval_call's suppress_none_result parameter.
+  # A bare expression statement's value is discarded by Python itself, so
+  # if it's a plain call ("f(...)" on its own line), tell _eval_call it may
+  # keep the call text instead of showing "None" - see the comment there.
   if isinstance(node.value, ast.Call):
     return _eval_call(node.value, scope, suppress_none_result=True)
   return _glpython_eval(node.value, scope)
@@ -1718,6 +1734,8 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   _glpython_frame_stack = [0]
   _glpython_pending_call_node = None
   _glpython_last_call_frame_id = None
+  _glpython_own_files.clear()
+  _glpython_own_files.update(["<glpython>", _GLPYTHON_REPL_PATH, *("/" + path for path in sources if path != _GLPYTHON_REPL_PATH)])
 
   if "/" not in sys.path:
     sys.path.insert(0, "/")
