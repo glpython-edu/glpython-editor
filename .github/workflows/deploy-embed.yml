@@ -1,8 +1,16 @@
 name: Deploy embed
 
+# GitHub Pages serves one deployment per repo, so every run builds both
+# channels into one site, each from its branch's current commit:
+#   /glpython-editor/      the live embed, from main (LiaScript courses)
+#   /glpython-editor/dev/  the dev channel's embed, from dev, with a «dev»
+#                          badge (a course loads it with the macro's flag)
+# A push to dev rebuilds main's commit unchanged (the build is
+# deterministic), so it never changes the live embed; a push to main leaves
+# the dev channel at dev's commit.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -10,9 +18,11 @@ permissions:
   pages: write
   id-token: write
 
+# One deployment after the other: a cancelled run could drop the other
+# channel's change.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -22,16 +32,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: live
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          path: dev
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run build:embed
+          cache-dependency-path: '*/package-lock.json'
+      - name: Build the live embed (main)
+        working-directory: live
+        run: npm ci && npm run build:embed
+      # A broken dev build stops a deployment that dev triggered (nothing
+      # changes), but not one that main triggered: the live embed goes out,
+      # the dev channel is missing until dev builds again.
+      - name: Build the dev embed (dev)
+        id: dev
+        working-directory: dev
+        continue-on-error: ${{ github.ref_name != 'dev' }}
+        run: npm ci && GLPYTHON_CHANNEL=dev npm run build:embed
+      - name: Put both into one site
+        run: |
+          mkdir site
+          cp -R live/dist-embed/. site/
+          if [ "${{ steps.dev.outcome }}" = "success" ]; then
+            cp -R dev/dist-embed site/dev
+          else
+            echo "::warning title=No dev channel::The dev branch didn't build; this deployment has only the live embed."
+          fi
+          echo "live: $(git -C live rev-parse --short HEAD), dev: $(git -C dev rev-parse --short HEAD)"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist-embed
+          path: site
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
