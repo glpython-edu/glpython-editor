@@ -25,7 +25,7 @@ npm run preview:embed  # serves dist-embed/ with COOP/COEP headers; open /demo.h
 
 `npm run dev:embed` currently 404s: `embed/index.html` loads `../src/embed/main.tsx`, which lies outside the Vite root, so only the build works. Use `build:embed` + `preview:embed`.
 
-There is no unit test framework. The automated checks are `test:protocol` (plain `node:assert` against the built `dist/index.js`; add protocol validation cases there) and `test:runtime` (plain Python scripts that exec `src/runtime/` under CPython 3.12, Pyodide's version; add runtime regression cases there). `.github/workflows/ci.yml` runs lint, both builds and the checks on every pull request and on pushes to `main`. The one browser check is `test:console` (`scripts/check-console-browser.mjs`): `playwright-core` drives the installed Chrome (GitHub's runner has one) against `vite preview` of `dist-embed/`, through the embed protocol, with Pyodide from its CDN; add browser regression cases there. Everything else that needs Pyodide in a browser (the worker, most of the UI) is not checked automatically. `npm run lint` has one known warning in `GlPythonWorkspace.tsx` (`react(immutability)` on the `cursor` variable in `Frame`).
+There is no unit test framework. The automated checks are `test:protocol` (plain `node:assert` against the built `dist/index.js`; add protocol validation cases there) and `test:runtime` (plain Python scripts that exec `src/runtime/` under CPython 3.12, Pyodide's version; add runtime regression cases there). `.github/workflows/ci.yml` runs lint, both builds and the checks on every pull request and on pushes to `main` and `dev`. The one browser check is `test:console` (`scripts/check-console-browser.mjs`): `playwright-core` drives the installed Chrome (GitHub's runner has one) against `vite preview` of `dist-embed/`, through the embed protocol, with Pyodide from its CDN; add browser regression cases there. Everything else that needs Pyodide in a browser (the worker, most of the UI) is not checked automatically. `npm run lint` has one known warning in `GlPythonWorkspace.tsx` (`react(immutability)` on the `cursor` variable in `Frame`).
 
 **Static tree pictures.** `src/treeSvg.ts` (`renderTreeSvg`) draws a list that reads as a tree as an SVG for a compile step in Node, built as its own entry `dist/tree-svg.js` (export `glpython-editor/tree-svg`, no React or Monaco) and run by `bin/glpython-tree.mjs`. It parses Python's literal syntax and writes leaves with Python's repr (`test:svg` compares with CPython), uses `layoutTree` and copies `TreeView`'s look with the light tokens as literals (a static file can't read `--glp-*`); keep the two in step. Output must stay byte-identical for the same input: fixed precision, no ids, no dates. The peer dependencies are optional so that a repo installing it only for this doesn't get React.
 
@@ -33,9 +33,19 @@ There is no unit test framework. The automated checks are `test:protocol` (plain
 
 **Releases.**
 - The package is consumed from git: the glpython IDE (`../glpython`) pins `glpython-editor` by tag in its `package.json`. The `prepare` script builds `dist/` on install.
-- To release, put a lightweight tag (`vX.Y.Z`; `package.json` keeps `0.1.0`) on the merge commit in `main`, then bump the tag in the IDE.
+- To release, put a lightweight tag (`vX.Y.Z`; `package.json` keeps `0.1.0`) on the promotion's merge commit in `main` (see «Branches and merging»), then bump the tag in the IDE (a PR into the IDE's `dev`).
 - Pushes to `main` deploy `dist-embed/` to GitHub Pages (`.github/workflows/deploy-embed.yml`). That is the embed LiaScript courses load (macro in `../glpython-liascript`), so merging to `main` ships to courses immediately.
 - **The dev channel:** the same workflow builds `dev` too, with `GLPYTHON_CHANNEL=dev` (a «dev» badge, `__GLPYTHON_CHANNEL__` in `vite.embed.config.ts`), into https://glpython-edu.github.io/glpython-editor/dev/. Pages serves one deployment per repo, so every run (a push to `main` or `dev`) builds both branches' current commits into one site; a push to `dev` rebuilds `main`'s commit unchanged. A course loads the dev embed with the macro's flag (`localStorage.glpythonChannel = "dev"`, see the macro's README); the dev IDE (https://glpython-edu.github.io/dev/) is built against this repo's `dev` branch.
+
+## Branches and merging
+
+- `main` is live: the embed LiaScript courses load, and the tags the IDE pins. `dev` is the dev channel: its embed at https://glpython-edu.github.io/glpython-editor/dev/ and the dev IDE built against it.
+- Work on a branch from `dev`; PRs target `dev` and are squash-merged.
+- Merge into `dev` only when the prompt says «Merge into `dev`: allowed» and CI is green. Without that line, open the PR and wait.
+- Never merge into `main`. The promotion `dev` → `main` is a PR the instructor merges, as a merge commit. Tag afterwards on `main` (as before), then the IDE bump.
+- Before a promotion, say what is on `dev` and not yet on `main`, and whether it was tested on the dev channel (https://glpython-edu.github.io/glpython-editor/dev/, https://glpython-edu.github.io/dev/, the macro's flag).
+- An urgent fix may go straight to `main` (PR from a branch off `main`) only with the instructor's explicit approval in the chat. Right after it, merge `main` back into `dev` with a merge-commit PR.
+- GitHub enforces part of this with rulesets on both branches: changes only through a PR, the CI check `check` green, no force push, no deletion, no required review; `main` takes only merge commits, `dev` squash or merge commits. GitHub can't tell the instructor and Claude apart (one account), so the rules above are what keeps `main` the instructor's.
 
 ## Architecture
 
