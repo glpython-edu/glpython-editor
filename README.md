@@ -552,6 +552,13 @@ npm run preview:embed
 The built app is emitted to `dist-embed/`. `embed/demo.html` is a small parent
 page that exercises the eval, turtle, and visualization-only modes.
 
+It is hosted in two channels: the live embed from `main` at
+https://glpython-edu.github.io/glpython-editor/index.html, and the dev channel
+from `dev` at https://glpython-edu.github.io/glpython-editor/dev/index.html,
+built with `GLPYTHON_CHANNEL=dev` so that it shows a «dev» badge. A push to
+`dev` never changes the live embed. The LiaScript macro loads the dev embed
+when its flag is set (see the macro's README).
+
 The iframe requires a `parentOrigin` query parameter containing the exact
 origin that is allowed to communicate with it:
 

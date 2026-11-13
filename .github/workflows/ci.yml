@@ -1,10 +1,10 @@
 name: CI
 
-# A pull request runs once (pull_request); main is checked again after the
-# merge.
+# A pull request runs once (pull_request); main and dev are checked again
+# after the merge.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 permissions:
