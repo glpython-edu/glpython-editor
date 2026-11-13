@@ -74,16 +74,55 @@ body,
   }
 }
 
-/* The visualizer is as tall as its content, with a small minimum, so a short
-   program leaves no empty area ("large" below sets its own minimum) - from
-   the start as tall as its tallest step, and at most 80% of the course
-   window (App.tsx sets the variable); a taller step scrolls inside it. */
-.embed-app .editor-panel {
+/* The embed fills its iframe, whose height the parent sets: the macro gives
+   it the height the content needs (App.tsx reports it), at most 80% of the
+   course's visible height. A taller step scrolls the visualizer's code area,
+   between the step bar and the footer, which stay in view; a taller output
+   (Run, Tests) scrolls the console. While visualizing the code area also
+   fills an iframe taller than the content ("large"). The visualizer has a
+   small minimum, so a short program leaves no empty area. */
+.embed-app {
+  display: flex;
+  flex-direction: column;
+  max-height: 100vh;
+}
+
+.embed-app:has(.glpython-workspace--visualizing) {
+  height: 100vh;
+}
+
+.embed-app .editor-column {
+  min-height: 0;
+}
+
+/* Only the code area (while visualizing) and the console (otherwise) give
+   way; the bars keep their height. */
+.embed-app .editor-column > *,
+.embed-app .output-panel > * {
+  flex-shrink: 0;
+}
+
+.embed-app .editor-column > .editor-panel {
+  flex-shrink: 1;
   min-height: 140px;
 }
 
-.embed-app .visualizer-frame {
-  max-height: var(--glp-visualizer-max-height, none);
+.embed-app .editor-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Not clipped (the embed has no rounded corners), so that a console at its
+   minimum still counts in the content's height (App.tsx). */
+.embed-app .output-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.embed-app .glpython-workspace:not(.glpython-workspace--visualizing) .editor-column > .output-panel,
+.embed-app .glpython-workspace:not(.glpython-workspace--visualizing) .output-panel > .console {
+  flex-shrink: 1;
 }
 
 /* The console is as tall as its content too (the host's iframe follows it),
@@ -94,9 +133,8 @@ body,
   max-height: 480px;
 }
 
-/* "?size=large": bigger code (20px, line height 1.6), the bar's text 16px,
-   and the visualizer at least as tall as the macro asks for (60% of the
-   course window). */
+/* "?size=large": bigger code (20px, line height 1.6) and the bar's text
+   16px (the macro makes the embed as tall as it may while visualizing). */
 .embed-app--large .visualizer-frame {
   font-size: 20px;
   line-height: 1.6;
@@ -115,6 +153,3 @@ body,
   height: 20px;
 }
 
-.embed-app--large .editor-panel {
-  min-height: var(--glp-large-visualizer-height, 330px);
-}

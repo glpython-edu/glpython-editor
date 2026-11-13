@@ -565,10 +565,21 @@ macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
 coverage after Tests (capability `coverage`), `listtree` lists drawn as
 trees (capability `listTree`) and `tree` the visualizer's mode «Baum»
-(capability `tree`), which a missing `features` doesn't; and `size=large` with
-`visualizerHeight=<px>` shows bigger code and a visualizer at least that tall.
-`windowHeight=<px>` is the host window's height, which the iframe can't see:
-the visualizer is at most 80% of it (without it: of the screen's height).
+(capability `tree`), which a missing `features` doesn't; and `size=large`
+shows bigger code.
+
+**Its height is the parent's.** The embed fills its iframe and reports the
+height its content needs in `glpython:resize` (`height`; since v0.1.35 also
+`visualizing`, whether the visualizer is open) - its natural height, also
+while the iframe is smaller or taller. A parent sets the iframe to that
+height, or less: the LiaScript macro gives it at most 80% of the course's
+visible height (with `large` while visualizing exactly that). In a smaller
+iframe the visualizer's code area scrolls, between the step bar and the
+global variables' footer, which stay in view, and follows the current step;
+without the visualizer the console scrolls. A taller iframe (`large`) is
+filled by the code area. Scrolling past the code's end goes on with the
+page around it. The old `windowHeight` and `visualizerHeight` parameters are
+ignored.
 
 **A steady height.** The embed's height follows its content, so the page
 around it would move with every step. While visualizing, it doesn't: the
@@ -577,7 +588,7 @@ tall as the output at the last step. The workspace draws the likely tallest
 steps once, hidden, and measures them: every step of a short trace, else the
 120 with the most open calls and some spread over the trace. A step taller
 still makes it grow when it comes, and it never shrinks while stepping. A
-step taller than the cap scrolls inside the visualizer, which follows the
+step taller than the iframe scrolls inside the visualizer, which follows the
 current step. A new visualization, a switch of the mode, and a new width
 start again. This applies to `compact` hosts (the embed); in the IDE the
 visualizer has a fixed height and scrolls already.

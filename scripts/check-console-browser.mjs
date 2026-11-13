@@ -45,14 +45,22 @@ process.on('exit', stopServer)
 
 // The parent page, served on the embed's own origin: it loads the embed and
 // passes messages on, version 4. Its own query (e.g. "?features=…") goes on
-// to the embed.
+// to the embed. As the LiaScript macro does, it sets the iframe to the
+// height the embed reports, at most "?cap=" (default 900px; the macro: 80%
+// of the course's visible height) - then the embed scrolls inside.
 const harness = `<!doctype html><meta charset="utf-8"><body style="margin:0">
-<iframe id="embed" style="width:760px;height:900px;border:0"></iframe>
+<iframe id="embed" style="width:760px;height:170px;border:0"></iframe>
 <script>
   const iframe = document.querySelector('#embed')
+  let cap = Number(new URLSearchParams(location.search).get('cap')) || 900
+  const fit = () => { if (window.reported) iframe.style.height = Math.min(cap, window.reported.height) + 'px' }
+  window.setCap = (height) => { cap = height; fit() }
   window.ready = false
   window.send = (type, source) => iframe.contentWindow.postMessage({ type: 'glpython:' + type, version: 4, source, mode: 'eval' }, location.origin)
-  addEventListener('message', (event) => { if (event.data?.type === 'glpython:ready') window.ready = true })
+  addEventListener('message', (event) => {
+    if (event.data?.type === 'glpython:ready') window.ready = true
+    if (event.data?.type === 'glpython:resize') { window.reported = event.data; fit() }
+  })
   iframe.src = './index.html?parentOrigin=' + encodeURIComponent(location.origin) + '&mode=eval&lang=de' + location.search.replace('?', '&')
 </script>`
 
@@ -251,6 +259,8 @@ try {
       await programLine(frame).waitFor({ timeout: 30000 })
       await programLine(frame).press('Control+d')
       await frame.locator('.repl-line:not(.repl-line--program)').waitFor({ timeout: 30000 })
+      // The error may arrive just after the line is back.
+      await frame.locator('.console', { hasText: /Name: \n[\s\S]*EOFError/ }).waitFor({ timeout: 10000 }).catch(() => {})
       assert.match(await consoleText(frame), /Name: \n[\s\S]*EOFError/, 'Ctrl+D → EOFError')
       console.log('input(): Stop and Ctrl+D end the wait with EOFError: ok')
 
@@ -557,7 +567,7 @@ try {
   // variable row in sight above the footer. No footer without globals.
   {
     const label = 'global variables in the footer'
-    const page = await openEmbed({}, '?visualizer=box&windowHeight=600')
+    const page = await openEmbed({}, '?visualizer=box&cap=600')
     const frame = page.frameLocator('#embed')
     try {
       const body = Array.from({ length: 30 }, (_, index) => `    s = s + ${index}`).join('\n')
@@ -602,14 +612,14 @@ try {
     await page.close()
   }
   // A steady height while stepping, in both modes: a recursion taller than
-  // the cap (windowHeight=900: the visualizer at most 720px) and a loop that
+  // the cap (the embed at most 720px: its code scrolls) and a loop that
   // prints. The current line is always in the visualizer's view.
   for (const [label, mode, source] of [
     ['steady height: a recursion, Kasten', 'box', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
     ['steady height: a recursion, Ersetzung', 'substitution', 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(4))\n'],
     ['steady height: a loop that prints', 'substitution', 'for i in range(6):\n    print("Zeile", i)\n'],
   ]) {
-    const page = await openEmbed({}, `?visualizer=${mode}&windowHeight=900`)
+    const page = await openEmbed({}, `?visualizer=${mode}&cap=720`)
     const frame = page.frameLocator('#embed')
     try {
       await page.evaluate((program) => window.send('visualize', program), source)
@@ -634,8 +644,78 @@ try {
       }
       assert.ok(states.length > 10, 'some steps')
       assert.deepEqual([...new Set(states.map((step) => step.height))], [states[0].height], 'one height for every step')
-      assert.ok(Math.max(...states.map((step) => step.view)) <= 720, `the visualizer at most 80% of the window (${Math.max(...states.map((step) => step.view))}px)`)
+      assert.ok(Math.max(...states.map((step) => step.height)) <= 720, `the embed at most as tall as its iframe may be (${Math.max(...states.map((step) => step.height))}px)`)
       assert.deepEqual(states.map((step, index) => step.lineInView ? null : index).filter((index) => index !== null), [], 'the current line in view')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
+  // The embed's height (P53b): it reports the height its content needs, also
+  // while its iframe is smaller (the LiaScript macro caps it at 80% of the
+  // course's visible height). Then the visualizer's code scrolls inside,
+  // between the step bar and the footer, both in view, and the embed's own
+  // page doesn't scroll; a larger cap lets it grow again. A short program
+  // scrolls nothing; a long output scrolls the console.
+  {
+    const label = 'the embed\'s height'
+    const page = await openEmbed({}, '?visualizer=box&cap=500')
+    const frame = page.frameLocator('#embed')
+    try {
+      const recursion = 'def fakultaet(n):\n    if n == 0:\n        return 1\n    return n * fakultaet(n - 1)\n\nprint(fakultaet(5))\n'
+      await page.evaluate((program) => window.send('visualize', program), recursion)
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
+      const last = frame.locator('.visualizer-controls button').nth(3)
+      await last.click()
+      const layout = async () => ({
+        iframe: await page.locator('#embed').evaluate((iframe) => iframe.getBoundingClientRect().height),
+        reported: await page.evaluate(() => window.reported),
+        ...(await frame.locator('.embed-app').evaluate(async (app) => {
+          await Promise.all(app.ownerDocument.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})))
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+          const rect = (selector) => app.querySelector(selector)?.getBoundingClientRect().toJSON() ?? null
+          const view = app.querySelector('.visualizer-view')
+          const console = app.querySelector('.console')
+          return { inner: innerHeight, pageScrolls: document.scrollingElement.scrollHeight > innerHeight + 1, bar: rect('.visualizer-bar'), footer: rect('.visualizer-globals'), view: view && { client: view.clientHeight, scroll: view.scrollHeight }, console: { client: console.clientHeight, scroll: console.scrollHeight } }
+        })),
+      })
+      const settled = async (check) => {
+        let state
+        for (let tries = 0; tries < 20; tries++) {
+          state = await layout()
+          if (check(state)) return state
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        return state
+      }
+      let state = await settled((s) => s.iframe === 500)
+      assert.equal(state.iframe, 500, `the iframe at the cap: ${JSON.stringify(state)}`)
+      assert.ok(state.reported.visualizing === true && state.reported.height > 700, `the content's own height reported: ${JSON.stringify(state.reported)}`)
+      assert.ok(state.view.scroll > state.view.client, 'the code scrolls')
+      assert.ok(state.bar.top >= 0 && state.footer.bottom <= state.inner + 1 && !state.pageScrolls, `step bar and footer in view, the page doesn't scroll: ${JSON.stringify(state)}`)
+      const current = await frame.locator('.visualizer-view').evaluate((view) => { const line = view.querySelector('.visual-current-line')?.getBoundingClientRect(); const box = view.getBoundingClientRect(); return !line || (line.top >= box.top - 1 && line.bottom <= box.bottom + 1) })
+      assert.ok(current, 'the current line in view')
+      const natural = state.reported.height
+      await page.evaluate(() => window.setCap(3000))
+      state = await settled((s) => s.iframe === natural)
+      assert.ok(state.iframe === natural && state.reported.height === natural && state.view.scroll <= state.view.client + 1, `a larger cap: the whole content (${JSON.stringify(state)})`)
+      await page.evaluate(() => window.setCap(400))
+      state = await settled((s) => s.iframe === 400)
+      assert.ok(state.iframe === 400 && state.reported.height === natural, `a smaller cap again: ${JSON.stringify(state)}`)
+      await page.evaluate(() => window.setCap(900))
+      await page.evaluate((program) => window.send('visualize', program), 'x = 1 + 2\nprint(x)\n')
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      state = await settled((s) => s.reported.height < 500 && s.iframe === s.reported.height)
+      assert.ok(state.iframe === state.reported.height && state.view.scroll <= state.view.client + 1 && !state.pageScrolls, `a short program: as tall as it needs (${JSON.stringify(state)})`)
+      await page.evaluate(() => window.setCap(400))
+      await page.evaluate((program) => window.send('run', program), 'for i in range(60):\n    print(i)\n')
+      await frame.locator('.console', { hasText: '59' }).waitFor({ timeout: 60000 })
+      state = await settled((s) => s.reported.visualizing === false && s.reported.height > 400 && s.iframe === 400)
+      assert.ok(state.iframe === 400 && state.reported.visualizing === false && state.console.scroll > state.console.client && !state.pageScrolls, `a long output scrolls the console: ${JSON.stringify(state)}`)
       console.log(`${label}: ok`)
     } catch (error) {
       failed += 1
@@ -667,7 +747,7 @@ try {
   }
   {
     const notenschnitt = 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5])\n'
-    const page = await openEmbed({}, '?features=visualize,tree&windowHeight=900')
+    const page = await openEmbed({}, '?features=visualize,tree')
     const frame = page.frameLocator('#embed')
     const stepCount = () => frame.locator('.visualizer-step-count').innerText()
     const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
@@ -818,7 +898,7 @@ try {
   // call text. The console prints nothing for None.
   {
     const anwenden = "def anwenden(op, x, y):\n    \"\"\"\n    >>> anwenden('*', 3, 4)\n    12\n    \"\"\"\n    if op == '+':\n        return x + y\n"
-    const page = await openEmbed({}, '?features=run,repl,visualize,tests,tree&windowHeight=900')
+    const page = await openEmbed({}, '?features=run,repl,visualize,tests,tree')
     const frame = page.frameLocator('#embed')
     const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
     // The root box's code at each step, a tree as its text.

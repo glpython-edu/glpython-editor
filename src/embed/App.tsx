@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GlPythonWorkspace, type WorkspaceCommand } from '../GlPythonWorkspace'
 import {
   isEmbedMode,
@@ -48,18 +48,42 @@ const featureList = (() => {
 })()
 const features = (feature: string) => featureList === null || featureList.has(feature)
 
-// "?size=large" (the macro's large option): bigger code, and with
-// "&visualizerHeight=600" the visualizer at least that many pixels tall (the
-// macro passes 60% of the course window; the iframe follows its content).
+// "?size=large" (the macro's large option): bigger code. The embed's height
+// is the parent's to set (the macro: at most 80% of the course's visible
+// height, with "large" while visualizing that much); the embed fills its
+// iframe and scrolls the visualizer's code inside it (style.css), and
+// reports the height its content needs (naturalHeight).
 const isLarge = new URLSearchParams(window.location.search).get('size') === 'large'
-const largeVisualizerHeight = Number(new URLSearchParams(window.location.search).get('visualizerHeight')) || null
-// "&windowHeight=900": the course window's height (the macro passes it; the
-// iframe can't see it). The visualizer is at most 80% of it - a taller step
-// scrolls inside - and at least as tall as "large" asks for. Without it
-// (an older macro), the screen's height stands in for the window's.
-const VISUALIZER_WINDOW_SHARE = 0.8
-const windowHeight = Number(new URLSearchParams(window.location.search).get('windowHeight')) || window.screen.availHeight
-const visualizerMaxHeight = Math.max(Math.round(windowHeight * VISUALIZER_WINDOW_SHARE), isLarge ? largeVisualizerHeight ?? 0 : 0)
+
+// The parts that scroll when the iframe is smaller than the content: the
+// visualizer's code area and the console.
+const SCROLLING_PARTS = '.visualizer-view, .console'
+
+function naturalHeight(root: HTMLElement): number {
+  // With its overflow: in a small iframe the parts' minimum heights stick
+  // out below the root (measured unrounded, unlike scrollHeight).
+  const top = root.getBoundingClientRect().top
+  let height = root.getBoundingClientRect().height
+  for (const part of root.querySelectorAll('.main-split > *, .editor-column > *, .output-panel > *')) height = Math.max(height, part.getBoundingClientRect().bottom - top)
+  for (const element of root.querySelectorAll<HTMLElement>(SCROLLING_PARTS)) {
+    const style = getComputedStyle(element)
+    // The content's height. The console only ever shrinks, so its
+    // scrollHeight is that. The code area also grows to fill the iframe,
+    // and scrollHeight is never less than its current height, so there it
+    // is the canvas's height plus the padding.
+    const canvas = element.classList.contains('visualizer-view') ? element.querySelector<HTMLElement>(':scope > .visualizer-canvas') : null
+    const content = canvas ? canvas.getBoundingClientRect().height + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) : element.scrollHeight
+    const current = element.getBoundingClientRect().height
+    // Plus a horizontal scrollbar and borders, within the part's own limits.
+    let natural = Math.max(Math.min(content + element.offsetHeight - element.clientHeight, parseFloat(style.maxHeight) || Infinity), parseFloat(style.minHeight) || 0)
+    // The code area gets no smaller than its panel's minimum height allows.
+    const panel = canvas ? element.closest<HTMLElement>('.editor-panel') : null
+    if (panel) natural = Math.max(natural, current - (panel.getBoundingClientRect().height - (parseFloat(getComputedStyle(panel).minHeight) || 0)))
+    // Unchanged when it isn't clipped or stretched (no rounding).
+    if (Math.abs(natural - current) >= 1) height += natural - current
+  }
+  return Math.ceil(height)
+}
 
 function visualizerModeFromLocation(): VisualizerMode | undefined {
   const mode = new URLSearchParams(window.location.search).get('visualizer')
@@ -155,17 +179,51 @@ export function App() {
     return () => window.removeEventListener('message', onMessage)
   }, [configuredParentOrigin, mode, sendToParent])
 
+  // The height the embed's content needs, also while its iframe is smaller
+  // (then the visualizer's code, or the console, scrolls inside) or taller
+  // (then the visualizer fills it): the root's height with each scrolling
+  // part at its natural height instead of its current one. Reporting the
+  // root's own height instead would keep a small iframe small for good.
+  // While visualizing it also says so, so that the parent can give "large"
+  // its height.
   useEffect(() => {
     const root = rootRef.current
     if (!root || !configuredParentOrigin) return
-    const observer = new ResizeObserver(() => {
-      sendToParent({
-        type: 'glpython:resize',
-        height: Math.ceil(root.getBoundingClientRect().height),
-      })
-    })
-    observer.observe(root)
-    return () => observer.disconnect()
+    let last = ''
+    let frame = 0
+    const report = () => {
+      frame = 0
+      const visualizing = root.querySelector('.glpython-workspace--visualizing') !== null
+      const height = naturalHeight(root)
+      const key = `${height}:${visualizing}`
+      if (key === last) return
+      last = key
+      sendToParent({ type: 'glpython:resize', height, visualizing })
+    }
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(report)
+    }
+    // The root keeps its size while its parts change inside it (it fills
+    // the iframe while visualizing), so the scrolling parts and their
+    // content are watched too.
+    const resizes = new ResizeObserver(schedule)
+    const watch = () => {
+      resizes.disconnect()
+      resizes.observe(root)
+      for (const element of root.querySelectorAll(SCROLLING_PARTS)) {
+        resizes.observe(element)
+        for (const child of element.children) resizes.observe(child)
+      }
+      schedule()
+    }
+    const mutations = new MutationObserver(watch)
+    mutations.observe(root, { childList: true, subtree: true, characterData: true })
+    watch()
+    return () => {
+      resizes.disconnect()
+      mutations.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
   }, [configuredParentOrigin, sendToParent])
 
   // Version 4: the parent's run button becomes a stop button while Python is
@@ -181,7 +239,6 @@ export function App() {
   return (
     <main
       className={`embed-app embed-app--${mode}${isLarge ? ' embed-app--large' : ''}`}
-      style={{ '--glp-visualizer-max-height': `${visualizerMaxHeight}px`, ...(isLarge && largeVisualizerHeight ? { '--glp-large-visualizer-height': `${largeVisualizerHeight}px` } : {}) } as CSSProperties}
       data-input-available={typeof SharedArrayBuffer !== 'undefined'}
       ref={rootRef}
     >
