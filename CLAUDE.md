@@ -35,6 +35,7 @@ There is no unit test framework. The automated checks are `test:protocol` (plain
 - The package is consumed from git: the glpython IDE (`../glpython`) pins `glpython-editor` by tag in its `package.json`. The `prepare` script builds `dist/` on install.
 - To release, put a lightweight tag (`vX.Y.Z`; `package.json` keeps `0.1.0`) on the merge commit in `main`, then bump the tag in the IDE.
 - Pushes to `main` deploy `dist-embed/` to GitHub Pages (`.github/workflows/deploy-embed.yml`). That is the embed LiaScript courses load (macro in `../glpython-liascript`), so merging to `main` ships to courses immediately.
+- **The dev channel:** the same workflow builds `dev` too, with `GLPYTHON_CHANNEL=dev` (a «dev» badge, `__GLPYTHON_CHANNEL__` in `vite.embed.config.ts`), into https://glpython-edu.github.io/glpython-editor/dev/. Pages serves one deployment per repo, so every run (a push to `main` or `dev`) builds both branches' current commits into one site; a push to `dev` rebuilds `main`'s commit unchanged. A course loads the dev embed with the macro's flag (`localStorage.glpythonChannel = "dev"`, see the macro's README); the dev IDE (https://glpython-edu.github.io/dev/) is built against this repo's `dev` branch.
 
 ## Architecture
 

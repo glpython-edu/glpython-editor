@@ -55,6 +55,10 @@ const features = (feature: string) => featureList === null || featureList.has(fe
 // reports the height its content needs (naturalHeight).
 const isLarge = new URLSearchParams(window.location.search).get('size') === 'large'
 
+// The channel this embed was built for (vite.embed.config.ts): "dev" shows a
+// badge, so that a dev embed in a course is never taken for the live one.
+declare const __GLPYTHON_CHANNEL__: 'live' | 'dev'
+
 // The parts that scroll when the iframe is smaller than the content: the
 // visualizer's code area and the console.
 const SCROLLING_PARTS = '.visualizer-view, .console'
@@ -274,6 +278,7 @@ export function App() {
           emptyOutput: mode !== 'visual',
         }}
       />
+      {__GLPYTHON_CHANNEL__ === 'dev' && <div className="embed-channel-badge" role="note" aria-label="dev channel">dev</div>}
     </main>
   )
 }
