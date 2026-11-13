@@ -79,10 +79,15 @@ export type GlPythonBusyMessage = {
   busy: boolean
 }
 
+// The height the embed's content needs, also when its iframe is smaller or
+// taller (then it scrolls its code area, or fills the iframe). Since
+// glpython-editor v0.1.35 also whether the visualizer is open (an optional
+// field: older parents ignore it, older embeds leave it out).
 export type GlPythonResizeMessage = {
   type: 'glpython:resize'
   version: GlPythonProtocolVersion
   height: number
+  visualizing?: boolean
 }
 
 export type GlPythonErrorMessage = {

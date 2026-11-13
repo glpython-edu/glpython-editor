@@ -71,8 +71,11 @@
           runButton.dataset.command = event.data.busy ? 'stop' : 'run'
           runButton.textContent = event.data.busy ? '■ Stop' : 'Run'
         }
+        // The height the embed's content needs, here at most 80% of the
+        // window (as the LiaScript macro does with the course's visible
+        // height): a taller visualization scrolls its code inside.
         if (event.data?.type === 'glpython:resize' && Number.isFinite(event.data.height)) {
-          iframe.style.height = `${Math.max(400, event.data.height)}px`
+          iframe.style.height = `${Math.min(Math.max(400, event.data.height), Math.round(window.innerHeight * 0.8))}px`
         }
       })
     </script>
