@@ -11,7 +11,7 @@ import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
 import type { ErrorHint, ErrorHintContext } from './errorHints'
 import { TreeView } from './TreeView'
-import { layoutTree, NODE_HEIGHT, ROW_HEIGHT, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
+import { NODE_HEIGHT, ROW_HEIGHT, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
 import { activeTreesAt, buildExpressionTree, episodeTreeLayout, treeKeyOf, treeModeSteps, type TreeEpisode } from './treeMode'
 
 type CoreStrings = {
@@ -571,26 +571,29 @@ function fullValueLength(value: FullValue, t: CoreStrings): string | null {
   return t.visualizerValueLength?.(value.length, value.kind) ?? `${value.length} ${value.kind === 'str' ? 'characters' : value.kind === 'dict' ? 'entries' : 'items'}`
 }
 
-// A variable in a frame's panel; an abbreviated value opens in full, with
-// its length below it.
-function LocalsValue({ name, value, className }: { name: string; value: string; className: string }) {
+// The overlay for the lists in call boxes that read as a tree (P56): the
+// workspace's useVisualizerPeek, over the visualizer's code like the
+// footer's box, so a row stays one line high and nothing moves.
+type TreePeekPayload = { name: string; value: string }
+type TreePeekAccess = { handlers: (key: string, payload: TreePeekPayload) => Record<string, unknown>; openKey: string | null; id: string }
+const TreePeekContext = createContext<TreePeekAccess | null>(null)
+
+// A variable in a call box's row; an abbreviated value opens in full, with
+// its length beside it. A list that reads as a tree (with that switch on)
+// stays one line, dotted like a value with more to it, and opens its tree
+// in the overlay instead.
+function LocalsValue({ name, value, className, peekKey }: { name: string; value: string; className: string; peekKey: string }) {
   const access = useContext(FullValueContext)
+  const treePeek = useContext(TreePeekContext)
   const full = lookupFullValue(access, value)
   const tree = access?.showTrees ? access.trees.get(value) : undefined
-  const treeNode = useMemo(() => tree ? treeFromValue(tree) : null, [tree])
-  const text = !access || !full
-    ? <span className={className}>{value}</span>
-    : <span className={`${className} visual-value-more`} role="button" tabIndex={0} title={access.t.visualizerShowFullValue ?? 'Show the full value'} onClick={() => access.open(full, name, tree)} onKeyDown={(event) => openOnKey(event, () => access.open(full, name, tree))}><span className="visual-value-more-text">{value}</span>{fullValueLength(full, access.t) && <span className="locals-value-length">{fullValueLength(full, access.t)}</span>}</span>
-  if (!access || !tree || !treeNode) return text
-  // A tree too wide for the panel opens in the dialog instead.
-  const openTree = () => access.open(full ?? { text: value, cut: false, length: null, kind: null }, name, tree)
-  return <>{text}{layoutTree(treeNode).width <= LOCALS_TREE_WIDTH
-    ? <span className="locals-tree"><TreeView tree={treeNode} label={value} /></span>
-    : <span className="locals-tree locals-tree-more visual-value-more" role="button" tabIndex={0} onClick={openTree} onKeyDown={(event) => openOnKey(event, openTree)}>{access.t.showTree ?? 'Show tree'}</span>}</>
+  const length = full && access ? fullValueLength(full, access.t) : null
+  if (access && tree && treePeek) {
+    return <span className={`${className} locals-value--tree`} data-tree-peek="" tabIndex={0} title={access.t.showTree ?? 'Show tree'} aria-describedby={treePeek.openKey === peekKey ? treePeek.id : undefined} {...treePeek.handlers(peekKey, { name, value })}><span className="visual-value-more-text">{value}</span>{length && <span className="locals-value-length">{length}</span>}</span>
+  }
+  if (!access || !full) return <span className={className}>{value}</span>
+  return <span className={`${className} visual-value-more`} role="button" tabIndex={0} title={access.t.visualizerShowFullValue ?? 'Show the full value'} onClick={() => access.open(full, name)} onKeyDown={(event) => openOnKey(event, () => access.open(full, name))}><span className="visual-value-more-text">{value}</span>{length && <span className="locals-value-length">{length}</span>}</span>
 }
-
-// The widest tree the variables panel shows itself, in characters.
-const LOCALS_TREE_WIDTH = 48
 
 // A long value in full, readable and scrollable.
 function FullValueDialog({ value, name, tree, t, onClose }: { value: FullValue; name: string | null; tree?: ValueTree; t: CoreStrings; onClose: () => void }) {
@@ -615,17 +618,109 @@ function FullValueDialog({ value, name, tree, t, onClose }: { value: FullValue; 
   )
 }
 
-// The module's variables, in a footer below the visualizer's code that
-// doesn't scroll with it: name and value as a box's row shows them, in a row
-// that wraps (at most about three lines, then it scrolls). Hovering over an
-// entry, tapping it or focusing it opens a box over the code, upwards from
-// the pointer: a function's (or class's) whole definition, highlighted, or
-// the full value. The box stays while the pointer is on the entry or on the
-// box; a tap elsewhere or Escape closes it. Pointer events, so mouse,
-// trackpad, pen and touch share one path.
-type GlobalsPeek = { name: string; x: number; y: number }
+// A box over the visualizer's code, for the footer's entries (P53) and for
+// the lists in call boxes that read as a tree (P56): hovering over its
+// trigger, tapping it or focusing it opens it, near the pointer and inside
+// the visualizer (at most its width and two thirds of its height, CSS),
+// upwards where there is more room above (the footer), else downwards. It
+// stays while the pointer is on the trigger or on the box; a tap elsewhere
+// or Escape closes it. Pointer events, so mouse, trackpad, pen and touch
+// share one path. `keepsOpen` says which taps belong to the triggers.
+type PeekAt<P> = { key: string; x: number; y: number; payload: P }
 const GLOBALS_PEEK_OPEN_DELAY = 120
 const GLOBALS_PEEK_CLOSE_DELAY = 180
+function useVisualizerPeek<P>(frameRef: { current: HTMLElement | null }, keepsOpen: (target: Node) => boolean) {
+  const peekRef = useRef<HTMLDivElement>(null)
+  const [peek, setPeek] = useState<PeekAt<P> | null>(null)
+  const timerRef = useRef<number | null>(null)
+  const keepsOpenRef = useRef(keepsOpen)
+  useLayoutEffect(() => { keepsOpenRef.current = keepsOpen })
+  const clearTimer = () => { if (timerRef.current !== null) { window.clearTimeout(timerRef.current); timerRef.current = null } }
+  const later = (delay: number, action: () => void) => { clearTimer(); timerRef.current = window.setTimeout(() => { timerRef.current = null; action() }, delay) }
+  useEffect(() => clearTimer, [])
+
+  useLayoutEffect(() => {
+    const box = peekRef.current
+    const frame = frameRef.current
+    if (!box || !frame || !peek) return
+    const bounds = frame.getBoundingClientRect()
+    const y = Math.min(Math.max(peek.y, bounds.top), bounds.bottom) - bounds.top
+    const upwards = y >= bounds.height - y
+    box.style.top = upwards ? '' : `${y}px`
+    box.style.bottom = upwards ? `${bounds.height - y}px` : ''
+    box.style.maxHeight = `${Math.max(48, Math.min(bounds.height * 2 / 3, upwards ? y : bounds.height - y))}px`
+    box.style.left = '0px'
+    const left = Math.min(Math.max(0, peek.x - bounds.left - 16), Math.max(0, bounds.width - box.offsetWidth))
+    box.style.left = `${left}px`
+  })
+
+  const isOpen = peek !== null
+  useEffect(() => {
+    if (!isOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && (peekRef.current?.contains(target) || keepsOpenRef.current(target))) return
+      setPeek(null)
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') setPeek(null) }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [isOpen])
+
+  const handlers = (key: string, payload: P) => ({
+    onPointerEnter: (event: ReactPointerEvent) => {
+      if (event.pointerType === 'touch') return
+      const { clientX: x, clientY: y } = event
+      if (peek) { clearTimer(); setPeek({ key, x, y, payload }) } else later(GLOBALS_PEEK_OPEN_DELAY, () => setPeek({ key, x, y, payload }))
+    },
+    onPointerLeave: (event: ReactPointerEvent) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) },
+    onPointerDown: (event: ReactPointerEvent) => {
+      clearTimer()
+      if (event.pointerType === 'touch' && peek?.key === key) { setPeek(null); return }
+      setPeek({ key, x: event.clientX, y: event.clientY, payload })
+    },
+    onFocus: (event: { currentTarget: HTMLElement }) => {
+      if (peek?.key === key) return
+      const rect = event.currentTarget.getBoundingClientRect()
+      setPeek({ key, x: rect.left, y: rect.top, payload })
+    },
+    onBlur: (event: { relatedTarget: EventTarget | null }) => { if (!(event.relatedTarget instanceof Node && peekRef.current?.contains(event.relatedTarget))) setPeek(null) },
+  })
+  const boxProps = {
+    ref: peekRef,
+    role: 'tooltip',
+    tabIndex: -1,
+    onPointerEnter: (event: ReactPointerEvent) => { if (event.pointerType !== 'touch') clearTimer() },
+    onPointerLeave: (event: ReactPointerEvent) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) },
+  }
+  return { peek, close: () => { clearTimer(); setPeek(null) }, handlers, boxProps }
+}
+
+// A value in such a box: its name and length, the full text, and its tree
+// (a list that reads as one, with that switch on).
+function ValuePeekContent({ name, value, valueKindLabels }: { name: string; value: string | null; valueKindLabels: Record<string, string> }) {
+  const access = useContext(FullValueContext)
+  const full = value === null ? null : lookupFullValue(access, value)
+  const text = value === null ? '\u2026' : Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : full ? `${full.text}${full.cut ? '\u2026' : ''}` : value
+  const length = full && access ? fullValueLength(full, access.t) : null
+  const tree = value !== null && access?.showTrees ? access.trees.get(value) : undefined
+  return <>
+    <div className="visualizer-globals-value"><span className="locals-name">{name}</span>{length && <span className="locals-value-length">{length}</span>}</div>
+    <pre className="visualizer-globals-value-text">{text}</pre>
+    {full?.cut && access && <p className="full-value-cut">{access.t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
+    {tree && <GlobalsPeekTree tree={tree} label={value ?? ''} />}
+  </>
+}
+
+// The module's variables, in a footer below the visualizer's code that
+// doesn't scroll with it: name and value as a box's row shows them, in a row
+// that wraps (at most about three lines, then it scrolls). An entry opens a
+// box (useVisualizerPeek): a function's (or class's) whole definition,
+// highlighted, or the full value.
 function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf, monaco, frameRef, resetKey }: {
   entries: Array<[string, string | null]>
   // The variables at the last step, drawn invisibly below the current ones,
@@ -639,12 +734,7 @@ function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf,
 }) {
   const access = useContext(FullValueContext)
   const footerRef = useRef<HTMLDivElement>(null)
-  const peekRef = useRef<HTMLDivElement>(null)
-  const [peek, setPeek] = useState<GlobalsPeek | null>(null)
-  const timerRef = useRef<number | null>(null)
-  const clearTimer = () => { if (timerRef.current !== null) { window.clearTimeout(timerRef.current); timerRef.current = null } }
-  const later = (delay: number, action: () => void) => { clearTimer(); timerRef.current = window.setTimeout(() => { timerRef.current = null; action() }, delay) }
-  useEffect(() => clearTimer, [])
+  const { peek, handlers, boxProps } = useVisualizerPeek<null>(frameRef, (target) => footerRef.current?.contains(target) ?? false)
   // Its height only grows during one visualization, so the code area above
   // doesn't jump as variables come and go.
   const heightRef = useRef(0)
@@ -658,90 +748,27 @@ function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf,
     heightRef.current = footer.offsetHeight
     footer.style.minHeight = `${heightRef.current}px`
   })
-  const shown = peek !== null && entries.some(([name]) => name === peek.name) ? peek : null
-  const shownEntry = shown ? entries.find(([name]) => name === shown.name) ?? null : null
-
-  // Upwards from the pointer, inside the visualizer: at most its width and
-  // two thirds of its height (CSS), moved left where it would stick out.
-  useLayoutEffect(() => {
-    const box = peekRef.current
-    const frame = frameRef.current
-    if (!box || !frame || !shown) return
-    const bounds = frame.getBoundingClientRect()
-    const y = Math.min(Math.max(shown.y, bounds.top), bounds.bottom) - bounds.top
-    box.style.bottom = `${bounds.height - y}px`
-    box.style.maxHeight = `${Math.max(48, Math.min(bounds.height * 2 / 3, y))}px`
-    box.style.left = '0px'
-    const left = Math.min(Math.max(0, shown.x - bounds.left - 16), Math.max(0, bounds.width - box.offsetWidth))
-    box.style.left = `${left}px`
-  })
-
-  useEffect(() => {
-    if (!shown) return
-    const closeOutside = (event: PointerEvent) => {
-      const target = event.target as Node | null
-      if (target && (peekRef.current?.contains(target) || footerRef.current?.contains(target))) return
-      setPeek(null)
-    }
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') setPeek(null) }
-    document.addEventListener('pointerdown', closeOutside)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [shown])
+  const shownEntry = peek ? entries.find(([name]) => name === peek.key) ?? null : null
 
   const peekId = 'glp-globals-peek'
-  const entryHandlers = (name: string) => ({
-    onPointerEnter: (event: ReactPointerEvent) => {
-      if (event.pointerType === 'touch') return
-      const { clientX: x, clientY: y } = event
-      if (shown) { clearTimer(); setPeek({ name, x, y }) } else later(GLOBALS_PEEK_OPEN_DELAY, () => setPeek({ name, x, y }))
-    },
-    onPointerLeave: (event: ReactPointerEvent) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) },
-    onPointerDown: (event: ReactPointerEvent) => {
-      clearTimer()
-      if (event.pointerType === 'touch' && shown?.name === name) { setPeek(null); return }
-      setPeek({ name, x: event.clientX, y: event.clientY })
-    },
-    onFocus: (event: { currentTarget: HTMLElement }) => {
-      if (shown?.name === name) return
-      const rect = event.currentTarget.getBoundingClientRect()
-      setPeek({ name, x: rect.left, y: rect.top })
-    },
-    onBlur: (event: { relatedTarget: EventTarget | null }) => { if (!(event.relatedTarget instanceof Node && peekRef.current?.contains(event.relatedTarget))) setPeek(null) },
-  })
-
   let peekContent: ReactNode = null
-  if (shown && shownEntry) {
+  if (shownEntry) {
     const [name, value] = shownEntry
     const definition = value !== null && (value === 'function' || value === 'class') ? definitionOf(name) : null
-    if (definition) {
-      peekContent = <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, definition.text).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
-    } else {
-      const full = value === null ? null : lookupFullValue(access, value)
-      const text = value === null ? '…' : Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : full ? `${full.text}${full.cut ? '…' : ''}` : value
-      const length = full && access ? fullValueLength(full, access.t) : null
-      const tree = value !== null && access?.showTrees ? access.trees.get(value) : undefined
-      peekContent = <>
-        <div className="visualizer-globals-value"><span className="locals-name">{name}</span>{length && <span className="locals-value-length">{length}</span>}</div>
-        <pre className="visualizer-globals-value-text">{text}</pre>
-        {full?.cut && access && <p className="full-value-cut">{access.t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
-        {tree && <GlobalsPeekTree tree={tree} label={value ?? ''} />}
-      </>
-    }
+    peekContent = definition
+      ? <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, definition.text).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
+      : <ValuePeekContent name={name} value={value} valueKindLabels={valueKindLabels} />
   }
   return (
     <>
       <div className="visualizer-globals" ref={footerRef}>
         <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : value}</span></div>)}</div>
-        <div className="visualizer-globals-list" role="list" aria-label={access?.t.visualizerGlobals ?? 'Global variables'}>{entries.map(([name, value]) => <div className="locals-row" role="listitem" key={name} data-name={name} tabIndex={0} aria-describedby={shown?.name === name ? peekId : undefined} {...entryHandlers(name)}>
+        <div className="visualizer-globals-list" role="list" aria-label={access?.t.visualizerGlobals ?? 'Global variables'}>{entries.map(([name, value]) => <div className="locals-row" role="listitem" key={name} data-name={name} tabIndex={0} aria-describedby={shownEntry?.[0] === name ? peekId : undefined} {...handlers(name, null)}>
           <span className="locals-name">{name}</span>
-          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'…'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <span className="locals-value" key={value}>{value}</span>}
+          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <span className="locals-value" key={value}>{value}</span>}
         </div>)}</div>
       </div>
-      {peekContent && <div className="visualizer-globals-peek" id={peekId} role="tooltip" ref={peekRef} tabIndex={-1} onPointerEnter={(event) => { if (event.pointerType !== 'touch') clearTimer() }} onPointerLeave={(event) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) }}>{peekContent}</div>}
+      {peekContent && <div className="visualizer-globals-peek" id={peekId} {...boxProps}>{peekContent}</div>}
     </>
   )
 }
@@ -1257,7 +1284,7 @@ function Frame(props: FrameProps) {
       {!isModule && localEntries.length > 0 && <>
         <div className="frame-divider" />
         <div className="frame-vars">
-          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" />}</div>)}
+          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" peekKey={`${frameId}:${name}`} />}</div>)}
         </div>
       </>}
     </div>
@@ -2070,6 +2097,12 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // last recorded step (or -1 itself if no steps were recorded at all).
   const clampedStepIndex = Math.min(Math.max(visualStepIndex, -1), Math.max(0, visualTraceSteps.length - 1))
   const currentTraceStep = visualTraceSteps[clampedStepIndex] ?? null
+  // The overlay of the lists in call boxes that read as a tree (P56), over
+  // the visualizer's code like the footer's box; a new step closes it.
+  const treePeek = useVisualizerPeek<TreePeekPayload>(visualizerFrameRef, (target) => (target instanceof Element ? target : target.parentElement)?.closest('[data-tree-peek]') != null)
+  const treePeekAccess: TreePeekAccess = { handlers: treePeek.handlers, openKey: treePeek.peek?.key ?? null, id: 'glp-tree-peek' }
+  const closeTreePeek = treePeek.close
+  useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode]) // eslint-disable-line react-hooks/exhaustive-deps
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
     values: fullValuesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.values),
     trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
@@ -2795,7 +2828,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const visualizerBarNode = <div className="visualizer-bar">{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}{isMarkdown && !isVisualizing && <div className="markdown-switch" role="group" aria-label={t.markdownViewLabel ?? 'Show the file'}><button type="button" aria-pressed={markdownView === 'page'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'page' }))}>{t.markdownPage ?? 'View'}</button><button type="button" aria-pressed={markdownView === 'text'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'text' }))}>{t.markdownText ?? 'Text'}</button></div>}</div>
-  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}>{rootFrame(currentStepView)}</FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>
+  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><TreePeekContext.Provider value={treePeekAccess}>{rootFrame(currentStepView)}</TreePeekContext.Provider></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{treePeek.peek && <FullValueContext.Provider value={fullValueAccess}><div className="visualizer-globals-peek visualizer-tree-peek" id="glp-tree-peek" {...treePeek.boxProps}><ValuePeekContent name={treePeek.peek.payload.name} value={treePeek.peek.payload.value} valueKindLabels={valueKindLabels} /></div></FullValueContext.Provider>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>
   const consoleNode = <>{!hideOutputPanel && <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span>{runtimeState !== 'ready' && <span className={`runtime-badge${runtimeState === 'failed' ? ' runtime-badge--failed' : ''}`}><span className="pulse" /> {t.pyodideRuntime}</span>}</div>{Object.keys(project.files).length > 1 && <span className="output-hint">{t.runsFile(project.mainFile)}</span>}</div><div className="console" ref={outputRef} role="log" onScroll={(event) => { const element = event.currentTarget; consoleAtBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24 }}>{isVisualizing ? <pre className={compact ? 'visual-output-steady' : undefined}><span>{isAtErrorStep ? <>{visualStdout && !visualStdout.endsWith('\n') ? `${visualStdout}\n` : visualStdout}<span className="output-error">{visualTrace?.error}</span></> : visualStdout || t.noOutput}</span>{compact && <span className="visual-output-final" aria-hidden="true">{visualFinalOutput}</span>}</pre> : <><pre>{output}<ErrorHintNote hint={outputErrorHint} t={t} /></pre>{consoleEntries.map((entry) => entry.kind === 'tests' ? <div key={entry.id} data-console-entry={entry.id}><TestReportView report={entry.report} t={t} onVisualizeExample={workspaceCapabilities.visualization ? visualizeExample : null} /></div> : entry.kind === 'note' ? <p key={entry.id} className="console-note" role="note" data-console-entry={entry.id}>{entry.text}</p> : <pre key={entry.id} data-console-entry={entry.id}><ReplTranscriptEntry listTree={workspaceCapabilities.listTree} entry={entry} definitionHint={t.replDefinitionHint ?? 'Definitions belong in the file.'} t={t} onVisualize={workspaceCapabilities.visualization && entry.result && !entry.result.unparsed && !entry.result.untraced && !entry.stale ? () => visualizeReplEntry(entry.id) : undefined} busy={isBusy} /></pre>)}</>}{answeredInputLines.length > 0 && <pre className="console-answered">{answeredInputLines.join('\n')}</pre>}</div>{(workspaceCapabilities.repl || programInput) && <form className={`repl-line${programInput ? ' repl-line--program' : ''}`} onSubmit={(event) => { event.preventDefault(); if (programInput) respondToInput(false); else submitRepl() }}><span className="repl-prompt" aria-hidden="true">{programInput ? inputRequest : '>>>'}</span><input ref={inputFieldRef} className="repl-input" value={programInput ? inputValue : replInput} onChange={(event) => { if (programInput) { setInputValue(event.target.value) } else { setReplInput(event.target.value); setReplHistoryIndex(null) } }} onKeyDown={handleReplKeyDown} aria-label={programInput ? `${t.programInputLabel ?? 'Input for the program'}${inputRequest ? `: ${inputRequest}` : ''}` : t.replInputLabel ?? 'Python input'} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" enterKeyHint="send" /></form>}</section>}</>
   // In the stacked layout the graphics show only while the program draws -
   // for a visualization: if it draws at all, so the panel doesn't appear in
