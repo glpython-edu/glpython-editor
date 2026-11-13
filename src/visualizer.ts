@@ -832,6 +832,52 @@ export function buildLocalsUpTo(trace: TraceStep[], uptoStep: number, frameId = 
   return locals
 }
 
+// Whether the module frame has a variable at any step: only then does the
+// visualizer show its footer of global variables (from the start, so the
+// code area doesn't shrink when the first one appears).
+export function traceHasGlobals(trace: TraceStep[]): boolean {
+  return trace.some((step) => step.frameId === 0 && Object.keys(step.locals).length > 0)
+}
+
+const DEFINITION_TYPES = new Set(['FunctionDef', 'AsyncFunctionDef', 'ClassDef'])
+
+// The source of the function (or class) a global name is bound to, for the
+// footer's hover box: the last `def` of that name the module ran up to
+// `uptoStep`, else (an import: `from lib import f`) a module-level `def` of
+// that name in one of the project's files, the root file first. Decorators
+// belong to it. Null for anything else (a lambda, a built-in).
+export function globalDefinitionSource(
+  trace: TraceStep[],
+  uptoStep: number,
+  name: string,
+  nodeIndexByFile: Map<string, Map<number, AstNode>>,
+  sources: Record<string, string>,
+  rootPath: string,
+): { path: string; text: string } | null {
+  let found: { path: string; node: AstNode } | null = null
+  for (const step of trace) {
+    if (step.step > uptoStep) break
+    if (step.frameId !== 0) continue
+    const node = nodeIndexByFile.get(step.path)?.get(step.nodeId)
+    if (node && DEFINITION_TYPES.has(node.type) && node.summary === name) found = { path: step.path, node }
+  }
+  if (!found) {
+    const paths = [rootPath, ...[...nodeIndexByFile.keys()].filter((path) => path !== rootPath)]
+    for (const path of paths) {
+      const module = [...(nodeIndexByFile.get(path)?.values() ?? [])].find((node) => node.type === 'Module')
+      const body = module?.fields.body
+      const node = Array.isArray(body) ? body.find((item) => DEFINITION_TYPES.has(item.type) && item.summary === name) : undefined
+      if (node) { found = { path, node }; break }
+    }
+  }
+  const source = found ? sources[found.path] : undefined
+  if (!found || source === undefined || found.node.line === undefined) return null
+  const decorators = found.node.fields.decorator_list
+  const startLine = Math.min(found.node.line, ...(Array.isArray(decorators) ? decorators.map((item) => item.line ?? Infinity) : []))
+  const lines = source.split('\n').slice(startLine - 1, found.node.endLine ?? found.node.line)
+  return { path: found.path, text: lines.join('\n').replace(/\s+$/, '') }
+}
+
 // The texts the evaluation chain export needs, see buildEvaluationChain.
 export type EvaluationChainStrings = {
   conditionComment: (condition: string, value: string) => string

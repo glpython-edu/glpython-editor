@@ -82,7 +82,7 @@ body,
   min-height: 140px;
 }
 
-.embed-app .visualizer-view {
+.embed-app .visualizer-frame {
   max-height: var(--glp-visualizer-max-height, none);
 }
 
@@ -97,7 +97,7 @@ body,
 /* "?size=large": bigger code (20px, line height 1.6), the bar's text 16px,
    and the visualizer at least as tall as the macro asks for (60% of the
    course window). */
-.embed-app--large .visualizer-view {
+.embed-app--large .visualizer-frame {
   font-size: 20px;
   line-height: 1.6;
 }

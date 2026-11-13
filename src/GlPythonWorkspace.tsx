@@ -5,8 +5,8 @@ import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
-import { tokenizePythonFragment } from './pyHighlight'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
 import type { ErrorHint, ErrorHintContext } from './errorHints'
@@ -155,6 +155,8 @@ type CoreStrings = {
   visualizerValueLength?: (length: number, kind: string | null) => string
   visualizerFullValueTitle?: (name: string | null) => string
   visualizerFullValueCut?: string
+  // The label of the visualizer's footer of global variables (for screen readers).
+  visualizerGlobals?: string
   visualizerCloseFullValue?: string
   // listtree: the options menu's switch, the panel's link for a tree too
   // wide for it, and a REPL value's button.
@@ -613,6 +615,142 @@ function FullValueDialog({ value, name, tree, t, onClose }: { value: FullValue; 
   )
 }
 
+// The module's variables, in a footer below the visualizer's code that
+// doesn't scroll with it: name and value as a box's row shows them, in a row
+// that wraps (at most about three lines, then it scrolls). Hovering over an
+// entry, tapping it or focusing it opens a box over the code, upwards from
+// the pointer: a function's (or class's) whole definition, highlighted, or
+// the full value. The box stays while the pointer is on the entry or on the
+// box; a tap elsewhere or Escape closes it. Pointer events, so mouse,
+// trackpad, pen and touch share one path.
+type GlobalsPeek = { name: string; x: number; y: number }
+const GLOBALS_PEEK_OPEN_DELAY = 120
+const GLOBALS_PEEK_CLOSE_DELAY = 180
+function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf, monaco, frameRef, resetKey }: {
+  entries: Array<[string, string | null]>
+  // The variables at the last step, drawn invisibly below the current ones,
+  // so the footer is as tall from the start as it will be at the end.
+  reserveEntries: Array<[string, string]>
+  valueKindLabels: Record<string, string>
+  definitionOf: (name: string) => { path: string; text: string } | null
+  monaco: Monaco | null
+  frameRef: { current: HTMLDivElement | null }
+  resetKey: unknown
+}) {
+  const access = useContext(FullValueContext)
+  const footerRef = useRef<HTMLDivElement>(null)
+  const peekRef = useRef<HTMLDivElement>(null)
+  const [peek, setPeek] = useState<GlobalsPeek | null>(null)
+  const timerRef = useRef<number | null>(null)
+  const clearTimer = () => { if (timerRef.current !== null) { window.clearTimeout(timerRef.current); timerRef.current = null } }
+  const later = (delay: number, action: () => void) => { clearTimer(); timerRef.current = window.setTimeout(() => { timerRef.current = null; action() }, delay) }
+  useEffect(() => clearTimer, [])
+  // Its height only grows during one visualization, so the code area above
+  // doesn't jump as variables come and go.
+  const heightRef = useRef(0)
+  useLayoutEffect(() => {
+    heightRef.current = 0
+    if (footerRef.current) footerRef.current.style.minHeight = ''
+  }, [resetKey])
+  useLayoutEffect(() => {
+    const footer = footerRef.current
+    if (!footer || footer.offsetHeight <= heightRef.current) return
+    heightRef.current = footer.offsetHeight
+    footer.style.minHeight = `${heightRef.current}px`
+  })
+  const shown = peek !== null && entries.some(([name]) => name === peek.name) ? peek : null
+  const shownEntry = shown ? entries.find(([name]) => name === shown.name) ?? null : null
+
+  // Upwards from the pointer, inside the visualizer: at most its width and
+  // two thirds of its height (CSS), moved left where it would stick out.
+  useLayoutEffect(() => {
+    const box = peekRef.current
+    const frame = frameRef.current
+    if (!box || !frame || !shown) return
+    const bounds = frame.getBoundingClientRect()
+    const y = Math.min(Math.max(shown.y, bounds.top), bounds.bottom) - bounds.top
+    box.style.bottom = `${bounds.height - y}px`
+    box.style.maxHeight = `${Math.max(48, Math.min(bounds.height * 2 / 3, y))}px`
+    box.style.left = '0px'
+    const left = Math.min(Math.max(0, shown.x - bounds.left - 16), Math.max(0, bounds.width - box.offsetWidth))
+    box.style.left = `${left}px`
+  })
+
+  useEffect(() => {
+    if (!shown) return
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && (peekRef.current?.contains(target) || footerRef.current?.contains(target))) return
+      setPeek(null)
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') setPeek(null) }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [shown])
+
+  const peekId = 'glp-globals-peek'
+  const entryHandlers = (name: string) => ({
+    onPointerEnter: (event: ReactPointerEvent) => {
+      if (event.pointerType === 'touch') return
+      const { clientX: x, clientY: y } = event
+      if (shown) { clearTimer(); setPeek({ name, x, y }) } else later(GLOBALS_PEEK_OPEN_DELAY, () => setPeek({ name, x, y }))
+    },
+    onPointerLeave: (event: ReactPointerEvent) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) },
+    onPointerDown: (event: ReactPointerEvent) => {
+      clearTimer()
+      if (event.pointerType === 'touch' && shown?.name === name) { setPeek(null); return }
+      setPeek({ name, x: event.clientX, y: event.clientY })
+    },
+    onFocus: (event: { currentTarget: HTMLElement }) => {
+      if (shown?.name === name) return
+      const rect = event.currentTarget.getBoundingClientRect()
+      setPeek({ name, x: rect.left, y: rect.top })
+    },
+    onBlur: (event: { relatedTarget: EventTarget | null }) => { if (!(event.relatedTarget instanceof Node && peekRef.current?.contains(event.relatedTarget))) setPeek(null) },
+  })
+
+  let peekContent: ReactNode = null
+  if (shown && shownEntry) {
+    const [name, value] = shownEntry
+    const definition = value !== null && (value === 'function' || value === 'class') ? definitionOf(name) : null
+    if (definition) {
+      peekContent = <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, definition.text).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
+    } else {
+      const full = value === null ? null : lookupFullValue(access, value)
+      const text = value === null ? '…' : Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : full ? `${full.text}${full.cut ? '…' : ''}` : value
+      const length = full && access ? fullValueLength(full, access.t) : null
+      const tree = value !== null && access?.showTrees ? access.trees.get(value) : undefined
+      peekContent = <>
+        <div className="visualizer-globals-value"><span className="locals-name">{name}</span>{length && <span className="locals-value-length">{length}</span>}</div>
+        <pre className="visualizer-globals-value-text">{text}</pre>
+        {full?.cut && access && <p className="full-value-cut">{access.t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
+        {tree && <GlobalsPeekTree tree={tree} label={value ?? ''} />}
+      </>
+    }
+  }
+  return (
+    <>
+      <div className="visualizer-globals" ref={footerRef}>
+        <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : value}</span></div>)}</div>
+        <div className="visualizer-globals-list" role="list" aria-label={access?.t.visualizerGlobals ?? 'Global variables'}>{entries.map(([name, value]) => <div className="locals-row" role="listitem" key={name} data-name={name} tabIndex={0} aria-describedby={shown?.name === name ? peekId : undefined} {...entryHandlers(name)}>
+          <span className="locals-name">{name}</span>
+          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'…'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <span className="locals-value" key={value}>{value}</span>}
+        </div>)}</div>
+      </div>
+      {peekContent && <div className="visualizer-globals-peek" id={peekId} role="tooltip" ref={peekRef} tabIndex={-1} onPointerEnter={(event) => { if (event.pointerType !== 'touch') clearTimer() }} onPointerLeave={(event) => { if (event.pointerType !== 'touch') later(GLOBALS_PEEK_CLOSE_DELAY, () => setPeek(null)) }}>{peekContent}</div>}
+    </>
+  )
+}
+
+function GlobalsPeekTree({ tree, label }: { tree: ValueTree; label: string }) {
+  const node = useMemo(() => treeFromValue(tree), [tree])
+  return <div className="full-value-tree"><TreeView tree={node} label={label} /></div>
+}
+
 // Which source span a Frame renders: the outermost module/global scope
 // (the whole file, no single AST node to clip to) or one open user-defined
 // function call (clipped to its own "def foo(...):" node).
@@ -1062,8 +1200,12 @@ function Frame(props: FrameProps) {
   // shows by itself that the call stays a box.
   const showBoxHint = substitutionMode && trees === null && scope.kind === 'call' && !insideBox
   const boxReason = showBoxHint ? trace.find((step) => step.kind === 'call-enter' && step.frameId === frameId)?.boxReason ?? null : null
+  // The box of the current call (or of the inline call the current step
+  // runs in): its variable row stays in sight at the bottom of the view
+  // while the box is taller than it (CSS, position: sticky).
+  const isCurrentBox = scope.kind === 'call' && (isFrameActive || activeHost?.frameId === frameId)
   return (
-    <div className={`frame-box${isModule ? ' frame-box--root' : ''}`} data-frame-id={frameId}>
+    <div className={`frame-box${isModule ? ' frame-box--root' : ''}${isCurrentBox ? ' frame-box--current' : ''}`} data-frame-id={frameId}>
       <div className="frame-code">
         {showBoxHint && openFrame && <div className="frame-hint" data-box-reason={boxReason ?? undefined}>{boxHint(boxReason, openFrame.funcName)}</div>}
         {lines.map((line, index) => {
@@ -1110,8 +1252,9 @@ function Frame(props: FrameProps) {
           )
         })}
       </div>
-      {/* The variables panel only when there are variables to show. */}
-      {localEntries.length > 0 && <>
+      {/* The variables row only when there are variables to show; the
+          module's are in the visualizer's footer (GlobalsFooter). */}
+      {!isModule && localEntries.length > 0 && <>
         <div className="frame-divider" />
         <div className="frame-vars">
           {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" />}</div>)}
@@ -1208,6 +1351,55 @@ function canvasOffset(element: HTMLElement, canvas: HTMLElement): { left: number
     top += node.offsetTop
   }
   return { left, top }
+}
+
+// `layer`: an arrow with an end in the footer of global variables is
+// drawn over the whole visualizer (view and footer, `.visualizer-frame`),
+// in its coordinates, since the view clips what it scrolls; the others in
+// the canvas. Both are measured again when the view scrolls (the footer
+// and a sticky variable row stay put while the code moves), from
+// `source`/`target`.
+type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg'; x1: number; y1: number; layer: 'canvas' | 'frame'; source: Element; target: Element }
+
+// One bezier path between two rendered elements, in the coordinates of its
+// layer (`canvasRect` or `frameRect`). In the canvas it leaves the source on
+// the side facing the target and enters the target from the side facing the
+// source, so the curve never doubles back through either end's text (locals
+// -> code, code -> locals, code -> code). An arrow to or from the footer of
+// global variables runs vertically: from the entry's top up to the code, or
+// down from the code into the entry.
+function connectorBetween(sourceEl: Element, targetEl: Element, kind: Connector['kind'], canvasRect: DOMRect, frameRect: DOMRect): Connector {
+  const layer = sourceEl.closest('.visualizer-globals') || targetEl.closest('.visualizer-globals') ? 'frame' : 'canvas'
+  const rect = layer === 'frame' ? frameRect : canvasRect
+  const sourceRect = sourceEl.getBoundingClientRect()
+  const targetRect = targetEl.getBoundingClientRect()
+  // Strip a leading "=" from parameter-annotation sources (e.g. the "=3"
+  // shown next to "n" in "def fact(n=3):") so the flying copy reads as a
+  // plain value, matching what lands in the locals row.
+  const value = (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
+  if (layer === 'frame') {
+    const down = targetRect.top + targetRect.bottom >= sourceRect.top + sourceRect.bottom ? 1 : -1
+    const x1 = sourceRect.left - rect.left + Math.min(sourceRect.width / 2, 24)
+    const x2 = targetRect.left - rect.left + Math.min(targetRect.width / 2, 24)
+    const y1 = (down === 1 ? sourceRect.bottom : sourceRect.top) - rect.top
+    const y2 = (down === 1 ? targetRect.top : targetRect.bottom) - rect.top
+    const dy = Math.max(Math.abs(y2 - y1) * 0.5, 30)
+    return { d: `M ${x1} ${y1} C ${x1} ${y1 + dy * down}, ${x2} ${y2 - dy * down}, ${x2} ${y2}`, value, kind, x1, y1, layer, source: sourceEl, target: targetEl }
+  }
+  const y1 = sourceRect.top - rect.top + sourceRect.height / 2
+  const y2 = targetRect.top - rect.top + targetRect.height / 2
+  const dir = targetRect.left + targetRect.right >= sourceRect.left + sourceRect.right ? 1 : -1
+  const x1 = (dir === 1 ? sourceRect.right : sourceRect.left) - rect.left
+  const x2 = (dir === 1 ? targetRect.left : targetRect.right) - rect.left
+  const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
+  return { d: `M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`, value, kind, x1, y1, layer, source: sourceEl, target: targetEl }
+}
+
+// The value of a variable in its frame's row: the module's in the footer
+// (outside the canvas), a call's in its box.
+function localsValueElement(canvas: HTMLElement, frameId: number, name: string): Element | null {
+  if (frameId === 0) return canvas.closest('.visualizer-frame')?.querySelector(`.visualizer-globals-list > .locals-row[data-name="${CSS.escape(name)}"] .locals-value`) ?? null
+  return canvas.querySelector(`.frame-box[data-frame-id="${frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(name)}"] .locals-value`)
 }
 
 // The doctest report in the output panel: a summary, glpython's hints, and
@@ -1460,6 +1652,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // Monaco's view-zone/content-widget machinery.
   const visualizerScrollRef = useRef<HTMLDivElement | null>(null)
   const visualizerCanvasRef = useRef<HTMLDivElement | null>(null)
+  const visualizerFrameRef = useRef<HTMLDivElement | null>(null)
   const inputChannelRef = useRef<{ control: Int32Array; payload: Uint8Array } | null>(null)
   const selectedFile = project.files[activeFile] ?? project.files[project.mainFile]
   const selectedPath = project.files[activeFile] ? activeFile : project.mainFile
@@ -1984,7 +2177,6 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // `pendingReturnOriginRef`) - it never draws an arrow at all, instead
   // flying the real destination span in directly, so it has no 'return'
   // entry in this union.
-  type Connector = { d: string; value: string; kind: 'var' | 'funcLookup' | 'arg'; x1: number; y1: number }
   const [connectorPaths, setConnectorPaths] = useState<Connector[]>([])
 
   // Short-lived "value flying along the arrow it just consumed" ghosts,
@@ -1992,7 +2184,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // previously-shown connector disappear. Purely decorative (and disabled
   // along with every other animation via `animationsEnabled`), so each one
   // just removes itself again once its CSS motion-path animation ends.
-  const [flights, setFlights] = useState<{ id: number; d: string; value: string }[]>([])
+  const [flights, setFlights] = useState<{ id: number; d: string; value: string; layer: 'canvas' | 'frame' }[]>([])
   const flightIdRef = useRef(0)
   const prevConnectorsRef = useRef<Connector[]>([])
   // The about-to-close callee frame's own return-line position, measured
@@ -2132,6 +2324,14 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const errorHost = isAtErrorStep ? inlineHostOf(errorTraceStep.frameId) : null
   const currentActiveTrees = useMemo(() => treeSteps ? activeTreesAt(treeSteps.episodes, clampedStepIndex) : new Map<number, TreeEpisode>(), [treeSteps, clampedStepIndex])
   const currentStepView: StepView = { currentStep: currentTraceStep, nextStep: nextTraceStep, openFrames, pendingCall: nextStepPendingCall, framesForRender, pendingCallLocals, collapsedCalls, declareTarget: nextStepDeclareTarget, isAtErrorStep, isAtLastStep, activeHost, errorHost, activeTrees: currentActiveTrees }
+  // The module's variables, in the footer below the code (GlobalsFooter):
+  // there from the start if the program has any, else no footer at all. A
+  // name the next step declares is there already, without a value yet.
+  const showGlobalsFooter = useMemo(() => traceHasGlobals(visualTrace?.trace ?? []), [visualTrace])
+  const finalGlobalEntries = useMemo(() => Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], Infinity, 0)), [visualTrace])
+  const globalEntries: Array<[string, string | null]> = Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, 0))
+  if (nextStepDeclareTarget?.frameId === 0 && !globalEntries.some(([name]) => name === nextStepDeclareTarget.varName)) globalEntries.push([nextStepDeclareTarget.varName, null])
+  const globalDefinitionOf = (name: string) => globalDefinitionSource(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, name, astIndexByFile, visualSources, visualRootPath ?? project.mainFile)
   // Why a call stays a box in the substitution and tree modes, at its box.
   const boxHintFor = (reason: BoxReason | null, funcName: string): ReactNode => {
     const text = reason ? t.visualizerBoxReason?.(reason) : undefined
@@ -2179,21 +2379,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     // deferred per-argument measurement below can re-measure the canvas
     // fresh once the callee frame-box's grow animation has actually
     // finished, instead of reusing a rect captured while it was still mid-flight.
-    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect): Connector => {
-      const sourceRect = sourceEl.getBoundingClientRect()
-      const targetRect = targetEl.getBoundingClientRect()
-      const y1 = sourceRect.top - rect.top + sourceRect.height / 2
-      const y2 = targetRect.top - rect.top + targetRect.height / 2
-      const dir = targetRect.left + targetRect.right >= sourceRect.left + sourceRect.right ? 1 : -1
-      const x1 = (dir === 1 ? sourceRect.right : sourceRect.left) - rect.left
-      const x2 = (dir === 1 ? targetRect.left : targetRect.right) - rect.left
-      const dx = Math.max(Math.abs(x2 - x1) * 0.5, 40)
-      // Strip a leading "=" from parameter-annotation sources (e.g. the
-      // "=3" shown next to "n" in "def fact(n=3):") so the flying copy
-      // reads as a plain value, matching what lands in the locals row.
-      const value = (sourceEl.textContent?.trim() ?? '').replace(/^=/, '')
-      return { d: `M ${x1} ${y1} C ${x1 + dx * dir} ${y1}, ${x2 - dx * dir} ${y2}, ${x2} ${y2}`, value, kind, x1, y1 }
-    }
+    const pathBetween = (sourceEl: Element, targetEl: Element, kind: Connector['kind'], rect: DOMRect): Connector =>
+      connectorBetween(sourceEl, targetEl, kind, rect, visualizerFrameRef.current?.getBoundingClientRect() ?? rect)
 
     const paths: Connector[] = []
 
@@ -2205,9 +2392,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     // set at once, since they key off disjoint AST node types.
     const varAnchor = nextStepVarSource ?? nextStepDeclareTarget
     if (varAnchor) {
-      const varEl = canvas.querySelector(
-        `.frame-box[data-frame-id="${varAnchor.frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(varAnchor.varName)}"] .locals-value`,
-      )
+      const varEl = localsValueElement(canvas, varAnchor.frameId, varAnchor.varName)
       const codeEl = canvas.querySelector('.visual-next-step')
       if (varEl && codeEl) paths.push(pathBetween(nextStepVarSource ? varEl : codeEl, nextStepVarSource ? codeEl : varEl, 'var', canvasRect))
     }
@@ -2219,9 +2404,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     // a different step kind, so it's always disjoint from both `varAnchor`
     // cases and can safely add its own path alongside them.
     if (nextStepFuncLookup) {
-      const funcEl = canvas.querySelector(
-        `.frame-box[data-frame-id="${nextStepFuncLookup.frameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(nextStepFuncLookup.varName)}"] .locals-value`,
-      )
+      const funcEl = localsValueElement(canvas, nextStepFuncLookup.frameId, nextStepFuncLookup.varName)
       const codeEl = canvas.querySelector('.visual-next-step')
       if (funcEl && codeEl) paths.push(pathBetween(funcEl, codeEl, 'funcLookup', canvasRect))
     }
@@ -2303,9 +2486,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
         if (!annotation) continue
         const [nodeId] = annotation
         const argEl = canvas.querySelector(`.frame-box[data-frame-id="${calleeFrameId}"] [data-annotation-node-id="${nodeId}"]`)
-        const paramEl = canvas.querySelector(
-          `.frame-box[data-frame-id="${calleeFrameId}"] > .frame-vars > .locals-row[data-name="${CSS.escape(paramName)}"] .locals-value`,
-        )
+        const paramEl = localsValueElement(canvas, calleeFrameId, paramName)
         if (argEl && paramEl) result.push(pathBetween(argEl, paramEl, 'arg', rect))
       }
       return result
@@ -2339,8 +2520,13 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
           const boxRect = boxEl.getBoundingClientRect()
           const cx = boxRect.left - canvasRect.left + boxRect.width / 2
           const cy = boxRect.top - canvasRect.top + boxRect.height / 2
-          boxEl.style.setProperty('--grow-dx', `${origin.x1 - cx}px`)
-          boxEl.style.setProperty('--grow-dy', `${origin.y1 - cy}px`)
+          // Where the function's row is now, in the canvas (it may be in the
+          // footer, which doesn't scroll with the canvas).
+          const originRect = origin.source.isConnected ? origin.source.getBoundingClientRect() : null
+          const ox = originRect ? originRect.left - canvasRect.left + originRect.width / 2 : origin.x1
+          const oy = originRect ? originRect.top - canvasRect.top + originRect.height / 2 : origin.y1
+          boxEl.style.setProperty('--grow-dx', `${ox - cx}px`)
+          boxEl.style.setProperty('--grow-dy', `${oy - cy}px`)
         } else {
           boxEl.style.removeProperty('--grow-dx')
           boxEl.style.removeProperty('--grow-dy')
@@ -2446,6 +2632,36 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     setConnectorPaths(paths)
   }, [nextStepVarSource, nextStepDeclareTarget, nextStepPendingCall, nextStepFuncLookup, nextStepReturnFlight, currentTraceStep, openFrames, clampedStepIndex])
 
+  // The footer of global variables and a sticky variable row stay where they
+  // are while the code scrolls: their arrows are measured again (once per
+  // frame), as are the ones a resize moves.
+  useEffect(() => {
+    const view = visualizerScrollRef.current
+    const frame = visualizerFrameRef.current
+    if (!isVisualizing || !view || !frame) return
+    let pending = 0
+    const remeasure = () => {
+      pending = 0
+      const canvas = visualizerCanvasRef.current
+      if (!canvas) return
+      const canvasRect = canvas.getBoundingClientRect()
+      const frameRect = frame.getBoundingClientRect()
+      const again = (connector: Connector) => connector.source.isConnected && connector.target.isConnected ? connectorBetween(connector.source, connector.target, connector.kind, canvasRect, frameRect) : connector
+      if (prevConnectorsRef.current.length === 0) return
+      prevConnectorsRef.current = prevConnectorsRef.current.map(again)
+      setConnectorPaths((current) => current.map(again))
+    }
+    const schedule = () => { if (!pending) pending = requestAnimationFrame(remeasure) }
+    view.addEventListener('scroll', schedule, { passive: true })
+    const observer = new ResizeObserver(schedule)
+    observer.observe(frame)
+    return () => {
+      view.removeEventListener('scroll', schedule)
+      observer.disconnect()
+      if (pending) cancelAnimationFrame(pending)
+    }
+  }, [isVisualizing])
+
   // Keeps the currently executing line in view as steps advance, with
   // ordinary DOM scrolling - directly replacing the old Monaco
   // view-zone/content-widget machinery, whose geometry bookkeeping across
@@ -2474,12 +2690,16 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
 
     let nextTop = container.scrollTop
     const line = root.querySelector<HTMLElement>('.visual-current-line')
+    // The current box's variable row may stick to the bottom of the view
+    // (.frame-box--current), covering what's behind it.
+    const stickyRow = root.querySelector<HTMLElement>('.frame-box--current > .frame-vars')
+    const visibleHeight = container.clientHeight - (stickyRow && !stickyRow.contains(line) ? stickyRow.offsetHeight : 0)
     if (line) {
       const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
       const top = canvasTop + canvasOffset(line, canvas).top
       const bottom = top + line.offsetHeight
       if (top - margin < nextTop) nextTop = top - margin
-      else if (bottom + margin > nextTop + container.clientHeight) nextTop = bottom + margin - container.clientHeight
+      else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
     }
 
     const frameId = currentTraceStep?.frameId ?? 0
@@ -2575,7 +2795,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const visualizerBarNode = <div className="visualizer-bar">{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}{isMarkdown && !isVisualizing && <div className="markdown-switch" role="group" aria-label={t.markdownViewLabel ?? 'Show the file'}><button type="button" aria-pressed={markdownView === 'page'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'page' }))}>{t.markdownPage ?? 'View'}</button><button type="button" aria-pressed={markdownView === 'text'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'text' }))}>{t.markdownText ?? 'Text'}</button></div>}</div>
-  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-view${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}>{rootFrame(currentStepView)}</FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>
+  const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}>{rootFrame(currentStepView)}</FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>
   const consoleNode = <>{!hideOutputPanel && <section className="output-panel"><div className="output-heading"><div className="output-title"><SquareTerminal size={16} /><span>{t.output}</span>{runtimeState !== 'ready' && <span className={`runtime-badge${runtimeState === 'failed' ? ' runtime-badge--failed' : ''}`}><span className="pulse" /> {t.pyodideRuntime}</span>}</div>{Object.keys(project.files).length > 1 && <span className="output-hint">{t.runsFile(project.mainFile)}</span>}</div><div className="console" ref={outputRef} role="log" onScroll={(event) => { const element = event.currentTarget; consoleAtBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24 }}>{isVisualizing ? <pre className={compact ? 'visual-output-steady' : undefined}><span>{isAtErrorStep ? <>{visualStdout && !visualStdout.endsWith('\n') ? `${visualStdout}\n` : visualStdout}<span className="output-error">{visualTrace?.error}</span></> : visualStdout || t.noOutput}</span>{compact && <span className="visual-output-final" aria-hidden="true">{visualFinalOutput}</span>}</pre> : <><pre>{output}<ErrorHintNote hint={outputErrorHint} t={t} /></pre>{consoleEntries.map((entry) => entry.kind === 'tests' ? <div key={entry.id} data-console-entry={entry.id}><TestReportView report={entry.report} t={t} onVisualizeExample={workspaceCapabilities.visualization ? visualizeExample : null} /></div> : entry.kind === 'note' ? <p key={entry.id} className="console-note" role="note" data-console-entry={entry.id}>{entry.text}</p> : <pre key={entry.id} data-console-entry={entry.id}><ReplTranscriptEntry listTree={workspaceCapabilities.listTree} entry={entry} definitionHint={t.replDefinitionHint ?? 'Definitions belong in the file.'} t={t} onVisualize={workspaceCapabilities.visualization && entry.result && !entry.result.unparsed && !entry.result.untraced && !entry.stale ? () => visualizeReplEntry(entry.id) : undefined} busy={isBusy} /></pre>)}</>}{answeredInputLines.length > 0 && <pre className="console-answered">{answeredInputLines.join('\n')}</pre>}</div>{(workspaceCapabilities.repl || programInput) && <form className={`repl-line${programInput ? ' repl-line--program' : ''}`} onSubmit={(event) => { event.preventDefault(); if (programInput) respondToInput(false); else submitRepl() }}><span className="repl-prompt" aria-hidden="true">{programInput ? inputRequest : '>>>'}</span><input ref={inputFieldRef} className="repl-input" value={programInput ? inputValue : replInput} onChange={(event) => { if (programInput) { setInputValue(event.target.value) } else { setReplInput(event.target.value); setReplHistoryIndex(null) } }} onKeyDown={handleReplKeyDown} aria-label={programInput ? `${t.programInputLabel ?? 'Input for the program'}${inputRequest ? `: ${inputRequest}` : ''}` : t.replInputLabel ?? 'Python input'} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" enterKeyHint="send" /></form>}</section>}</>
   // In the stacked layout the graphics show only while the program draws -
   // for a visualization: if it draws at all, so the panel doesn't appear in

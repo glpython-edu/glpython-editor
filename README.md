@@ -115,9 +115,24 @@ The visualizer's toolbar is one line: first step, previous step, next step,
 last step, the scrubber, the step counter, the box/substitution switch, the
 **⋯ Options** menu (animated steps, and with `export` the → chain's comments and
 copy button) and ✕ to exit (`visualizerFirstStep`, `visualizerLastStep`,
-`visualizerOptions`; ✕ uses `exitVisualizer`). The variables panel only appears
-when there are variables; in a visualizer narrower than 900px it sits below the
-code.
+`visualizerOptions`; ✕ uses `exitVisualizer`).
+
+A call box lists its variables in a row below its code; the box of the current
+call, when it's taller than the view, keeps that row at the view's bottom edge
+while the box is on screen. The file's (global) variables are in a footer below
+the code that doesn't scroll with it, at every width, so the code has the full
+width: name and value (`auswerten Funktion`, `x 3`) in a row that wraps, at
+most about three lines high (then it scrolls). A program without global
+variables has no footer; one with them has it from the start, as tall as at
+the last step. Hovering over an entry, tapping it (touch) or focusing it opens
+a box over the code, upwards from the pointer and inside the visualizer (at
+most its width and ⅔ of its height, scrolling inside): a function's (or
+class's) whole definition, highlighted, also while it's open as a call box; any
+other value in full. The box stays while the pointer moves into it; it closes
+when the pointer leaves both, on a tap elsewhere or with Escape. Arrows from a
+call to a global function, and between a global variable and the code, end at
+its entry in the footer. Text: `visualizerGlobals` (the footer's label for
+screen readers), optional.
 
 The toolbar switches between two ways of showing a function call.
 In **substitution** mode (the default), a call to a function whose body is a
@@ -219,7 +234,8 @@ keeping its first elements and its last one: `[1, 2, 3, 4, 5, …, 100]`.
   elements too. A long string is shortened in the middle.
 - **In full:** an abbreviated value is underlined with dots. A click (or Enter)
   shows it in full, with its number of elements or characters (`100 Werte`,
-  also below it in the variables panel). The runtime keeps up to 50 000
+  also below it in a call box's variables). A global variable's box (in the
+  footer) shows it in full, with its length. The runtime keeps up to 50 000
   characters of it.
 
 A long value in a line wraps within the code instead of running on below the
@@ -245,10 +261,11 @@ leaf. `['+', ['var', 'x'], ['f', 1, 2]]`:
 
 Labels have no quotes, string leaves do. The rule is generic, so `['Anna', 'Ben']`
 is drawn too; the text stays as it is. Where:
-- **Variables panel:** below the value; a tree wider than the panel
+- **Variables of a call box:** below the value; a tree wider than the panel
   (48 characters) has a link «Baum zeigen» (`showTree`) to the full-value
-  dialog instead. The options menu's «Listen als Baum zeigen»
-  (`visualizerListTrees`) switches the trees off and on.
+  dialog instead. A global variable's tree is in its box (hover or tap its
+  entry in the footer), below the full value. The options menu's «Listen als
+  Baum zeigen» (`visualizerListTrees`) switches the trees off and on.
 - **Full-value dialog:** below the value's text.
 - **REPL:** a value that reads as a tree has a «Baum» button (`replShowTree`)
   next to «Visualisieren»; it shows the tree below the value and hides it
@@ -257,7 +274,8 @@ is drawn too; the text stays as it is. Where:
 A tree of more than 100 nodes, deeper than 10 or containing itself isn't
 drawn; long labels and leaves are shortened in their middle. For screen
 readers each tree is an image described by the list's text. A tree wider
-than its place (the console, the dialog, a narrow panel) scrolls sideways:
+than its place (the console, the dialog, a global variable's box, a narrow
+panel) scrolls sideways:
 it starts with its root in the middle, a ‹ or › at an edge shows that more is
 hidden there, and it takes the focus, so the arrow keys, Home and End scroll
 it. The positions come from the package's own implementation of van der Ploeg's
