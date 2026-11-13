@@ -58,6 +58,9 @@ const isLarge = new URLSearchParams(window.location.search).get('size') === 'lar
 // The channel this embed was built for (vite.embed.config.ts): "dev" shows a
 // badge, so that a dev embed in a course is never taken for the live one.
 declare const __GLPYTHON_CHANNEL__: 'live' | 'dev'
+// "&channelBadge=host": the host shows the badge itself (the LiaScript
+// macro, at the top of the block), so the embed doesn't.
+const showsChannelBadge = __GLPYTHON_CHANNEL__ === 'dev' && new URLSearchParams(window.location.search).get('channelBadge') !== 'host'
 
 // The parts that scroll when the iframe is smaller than the content: the
 // visualizer's code area and the console.
@@ -278,7 +281,7 @@ export function App() {
           emptyOutput: mode !== 'visual',
         }}
       />
-      {__GLPYTHON_CHANNEL__ === 'dev' && <div className="embed-channel-badge" role="note" aria-label="dev channel">dev</div>}
+      {showsChannelBadge && <div className="embed-channel-badge" role="note" aria-label="dev channel">dev</div>}
     </main>
   )
 }
