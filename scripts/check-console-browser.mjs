@@ -192,6 +192,17 @@ try {
   // embed draws some steps a second time, hidden, to know their height.
   const measured = (frame) => frame.locator('.visualizer-view[data-steady-height="done"]').waitFor({ timeout: 30000 })
   const programLine = (frame) => frame.locator('.repl-line--program .repl-input')
+  // A global variable's box (P53): hovering over its entry in the footer.
+  const peekOf = async (frame, name) => {
+    // An open box may cover the entry: leave it first, it closes.
+    const page = frame.owner().page()
+    await page.mouse.move(0, 0)
+    await frame.locator('.visualizer-globals-peek').waitFor({ state: 'detached', timeout: 5000 })
+    await frame.locator(`.visualizer-globals .locals-row[data-name="${name}"]`).hover()
+    const peek = frame.locator('.visualizer-globals-peek')
+    await peek.waitFor({ timeout: 5000 })
+    return peek
+  }
   // A REPL input, once the REPL is free again (until then it keeps the text).
   const enterRepl = async (frame, text) => {
     const repl = frame.locator('.repl-line .repl-input')
@@ -288,15 +299,20 @@ try {
       const short = '[1, 2, 3, 4, 5, …, 100]'
       assert.equal((await lines())[0], `l = ${short}`, 'the step: abbreviated')
       const panelValue = frame.locator('.locals-row[data-name="l"] .locals-value')
-      assert.equal(await panelValue.locator('.visual-value-more-text').innerText(), short, 'the variables: the same abbreviation')
-      assert.equal(await panelValue.locator('.locals-value-length').innerText(), '100 Werte', 'its length')
+      assert.equal(await panelValue.innerText(), short, 'the variables: the same abbreviation')
       assert.equal(await frame.locator('.locals-row[data-name="baum"] .locals-value').innerText(), "['+', ['*', 2, ['-', 7, 3]], ['/', ['+', 1, 2], 3]]", 'an expression tree: complete')
       const inline = frame.locator('.frame-box--root .visual-substituted-value.visual-value-more').first()
       const codeBox = await frame.locator('.frame-box--root > .frame-code').boundingBox()
       const valueBox = await inline.boundingBox()
       assert.ok(valueBox.x + valueBox.width <= codeBox.x + codeBox.width, 'the step value stays within the code')
       const full = `[${Array.from({ length: 100 }, (_, index) => index + 1).join(', ')}]`
-      for (const [label, target] of [['the variables', panelValue], ['the step', inline]]) {
+      // A global variable: its box, on hover. A step's value: the dialog.
+      const peek = await peekOf(frame, 'l')
+      assert.equal(await peek.locator('.visualizer-globals-value-text').innerText(), full, 'the variables: the full value')
+      assert.equal(await peek.locator('.locals-value-length').innerText(), '100 Werte', 'the variables: its length')
+      await page.mouse.move(0, 0)
+      await peek.waitFor({ state: 'detached', timeout: 5000 })
+      for (const [label, target] of [['the step', inline]]) {
         await target.click()
         const dialog = frame.getByRole('dialog')
         assert.equal(await dialog.locator('.full-value-text').innerText(), full, `${label}: the full value`)
@@ -354,7 +370,8 @@ try {
       await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
       await frame.locator('.locals-row[data-name="namen"]').waitFor({ timeout: 30000 })
-      const treeOf = (name) => frame.locator(`.locals-row[data-name="${name}"] .value-tree`)
+      // The trees of global variables are in their boxes (P53).
+      const treeOf = (_name) => frame.locator('.visualizer-globals-peek .value-tree')
       const parts = (tree) => tree.locator('.value-tree-node, .value-tree-leaf').allInnerTexts()
       await frame.getByRole('button', { name: 'Optionen' }).click()
       const toggle = frame.getByRole('menuitemcheckbox', { name: 'Listen als Baum zeigen' })
@@ -363,32 +380,38 @@ try {
         assert.equal(await toggle.count(), 0, 'no switch')
       } else {
         await page.keyboard.press('Escape')
+        const peek = await peekOf(frame, 'baum')
         assert.deepEqual(await parts(treeOf('baum')), ['+', 'var', "'x'", 'f', '1', '2'], 'the tree, labels without quotes')
-        assert.equal(await frame.locator('.locals-row[data-name="baum"] .value-tree-scroll').getAttribute('aria-label'), "['+', ['var', 'x'], ['f', 1, 2]]", 'its text alternative')
+        assert.equal(await peek.locator('.value-tree-scroll').getAttribute('aria-label'), "['+', ['var', 'x'], ['f', 1, 2]]", 'its text alternative')
         assert.equal(await frame.locator('.locals-row[data-name="baum"] .locals-value').innerText(), "['+', ['var', 'x'], ['f', 1, 2]]", 'the text stays')
         // No two nodes overlap; each child is below its parent; the tree
-        // stays within the panel.
+        // stays within the box.
         const boxes = await treeOf('baum').locator('.value-tree-node, .value-tree-leaf').evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))
         for (const [index, a] of boxes.entries()) for (const b of boxes.slice(index + 1)) assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, `nodes overlap: ${JSON.stringify([a, b])}`)
         assert.ok(boxes[1].top > boxes[0].bottom, 'a child below its parent')
-        const row = await frame.locator('.locals-row[data-name="baum"]').boundingBox()
-        assert.ok(Math.max(...boxes.map((box) => box.right)) <= row.x + row.width, 'within the panel')
+        const peekBox = await peek.boundingBox()
+        assert.ok(Math.max(...boxes.map((box) => box.right)) <= peekBox.x + peekBox.width, 'within the box')
+        await peekOf(frame, 'namen')
         assert.deepEqual(await parts(treeOf('namen')), ['Anna', "'Ben'"], 'a list of names reads as a tree too')
-        // Too wide for the panel: in the dialog.
-        assert.equal(await treeOf('gross').count(), 0, 'a wide tree: not in the panel')
-        await frame.locator('.locals-row[data-name="gross"] .locals-tree-more').click()
-        const dialog = frame.getByRole('dialog')
-        assert.ok((await parts(dialog.locator('.value-tree'))).includes('liste'), 'a wide tree: in the dialog')
-        await page.keyboard.press('Escape')
-        await dialog.waitFor({ state: 'detached', timeout: 5000 })
+        await peekOf(frame, 'gross')
+        assert.ok((await parts(treeOf('gross'))).includes('liste'), 'a wide tree: in the box too')
+        await page.mouse.move(0, 0)
+        await peek.waitFor({ state: 'detached', timeout: 5000 })
         // The switch.
         await frame.getByRole('button', { name: 'Optionen' }).click()
         await toggle.click()
-        await frame.locator('.value-tree').first().waitFor({ state: 'detached', timeout: 5000 })
+        await page.keyboard.press('Escape')
+        await peekOf(frame, 'baum')
+        assert.equal(await treeOf('baum').count(), 0, 'switched off: no tree')
+        await page.mouse.move(0, 0)
+        await peek.waitFor({ state: 'detached', timeout: 5000 })
+        await frame.getByRole('button', { name: 'Optionen' }).click()
         if (!(await toggle.isVisible())) await frame.getByRole('button', { name: 'Optionen' }).click()
         await toggle.click()
-        await treeOf('baum').waitFor({ timeout: 5000 })
         await page.keyboard.press('Escape')
+        await peekOf(frame, 'baum')
+        await treeOf('baum').waitFor({ timeout: 5000 })
+        await page.mouse.move(0, 0)
       }
       // The REPL: a «Baum» button for a value that reads as a tree.
       await frame.locator('.visualizer-exit').click()
@@ -518,12 +541,63 @@ try {
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
       await measured(frame)
       await frame.locator('.visualizer-controls button').nth(3).click()
-      await frame.locator('.locals-row[data-name="breit"] .locals-tree-more').click()
-      await checkNarrow('the dialog', frame.getByRole('dialog').locator('.value-tree-scroll'))
+      await checkNarrow('the box', (await peekOf(frame, 'breit')).locator('.value-tree-scroll'))
       console.log('listtree: narrow: ok')
     } catch (error) {
       failed += 1
       console.error(`listtree: narrow: ${error.message}`)
+    }
+    await page.close()
+  }
+  // The global variables (P53): in a footer below the code that doesn't
+  // scroll with it; the arrow from a call to a global function ends at its
+  // entry there, also with the current line at the bottom of a long
+  // program; hovering opens the definition, highlighted, inside the
+  // visualizer. The current call's box, taller than the view, keeps its
+  // variable row in sight above the footer. No footer without globals.
+  {
+    const label = 'global variables in the footer'
+    const page = await openEmbed({}, '?visualizer=box&windowHeight=600')
+    const frame = page.frameLocator('#embed')
+    try {
+      const body = Array.from({ length: 30 }, (_, index) => `    s = s + ${index}`).join('\n')
+      await page.evaluate((source) => window.send('visualize', source), `def lang(n):\n    s = n\n${body}\n    return s\n\n${'\n'.repeat(20)}x = lang(1)\n`)
+      await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(frame)
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      const geometry = () => frame.locator('.visualizer-frame').evaluate(async (box) => {
+        await Promise.all(box.ownerDocument.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})))
+        const rect = (element) => element?.getBoundingClientRect().toJSON() ?? null
+        const frameRect = box.getBoundingClientRect()
+        const ends = [...box.querySelectorAll('.visualizer-connectors--frame > path')].flatMap((arrow) => [0, arrow.getTotalLength()].map((at) => { const point = arrow.getPointAtLength(at); return { x: point.x + frameRect.left, y: point.y + frameRect.top } }))
+        return { frame: rect(box), view: rect(box.querySelector('.visualizer-view')), footer: rect(box.querySelector('.visualizer-globals')), entry: rect(box.querySelector('.visualizer-globals-list > .locals-row[data-name="lang"]')), arrowEnds: ends, sticky: rect(box.querySelector('.frame-box--current > .frame-vars')) }
+      })
+      // Until the call of lang is about to be looked up: its arrow.
+      let state = await geometry()
+      const atEntry = ({ arrowEnds, entry }) => arrowEnds.some((point) => point.y >= entry.top - 1 && point.y <= entry.bottom + 1 && point.x >= entry.left - 1 && point.x <= entry.right + 1)
+      for (let steps = 0; !(state.entry && atEntry(state)) && steps < 5; steps++) { await next.click(); state = await geometry() }
+      assert.ok(state.footer && state.footer.top >= state.view.bottom - 1 && state.footer.bottom <= state.frame.bottom + 1, 'the footer below the code, in the visualizer')
+      assert.ok(atEntry(state), `an arrow from the entry of lang: ${JSON.stringify(state)}`)
+      // The box of lang, taller than the view: its variables at the bottom.
+      for (let steps = 0; !state.sticky && steps < 5; steps++) { await next.click(); state = await geometry() }
+      assert.ok(state.sticky && state.sticky.bottom <= state.footer.top + 1 && state.sticky.bottom >= state.view.bottom - 2, `the current box's variables above the footer: ${JSON.stringify(state)}`)
+      const peek = await peekOf(frame, 'lang')
+      assert.match(await peek.innerText(), /^def lang\(n\):\n {4}s = n\n/, 'the definition')
+      assert.ok(await peek.locator('.py-tok-keyword').count() >= 2, 'highlighted')
+      const peekBox = await peek.boundingBox()
+      const frameBox = await frame.locator('.visualizer-frame').boundingBox()
+      assert.ok(peekBox.y >= frameBox.y - 1 && peekBox.x >= frameBox.x - 1 && peekBox.x + peekBox.width <= frameBox.x + frameBox.width + 1 && peekBox.height <= frameBox.height * 2 / 3 + 1, 'inside the visualizer, at most two thirds of its height')
+      assert.ok(await peek.evaluate((element) => element.scrollHeight > element.clientHeight), 'a long definition scrolls')
+      await page.mouse.move(0, 0)
+      await peek.waitFor({ state: 'detached', timeout: 5000 })
+      await page.evaluate((source) => window.send('visualize', source), 'print(1 + 2)\n')
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      assert.equal(await frame.locator('.visualizer-globals').count(), 0, 'no footer without globals')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
     }
     await page.close()
   }
@@ -541,7 +615,10 @@ try {
       await page.evaluate((program) => window.send('visualize', program), source)
       await frame.locator('.visualizer-step-count').waitFor({ timeout: 60000 })
       await measured(frame)
-      const state = () => frame.locator('.embed-app').evaluate((app) => {
+      // Once the step's animations are over (a call box flies in from its
+      // function's entry in the footer, below the code).
+      const state = () => frame.locator('.embed-app').evaluate(async (app) => {
+        await Promise.all(app.ownerDocument.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})))
         const view = app.querySelector('.visualizer-view')
         const line = view.querySelector('.visual-current-line')
         const box = view.getBoundingClientRect()

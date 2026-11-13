@@ -42,3 +42,24 @@ export function tokenizePythonFragment(monaco: Monaco, text: string): PyTextRun[
   }
   return runs
 }
+
+// A whole piece of source (a function's definition) as coloured runs per
+// line, tokenized in one go so a string or comment spanning lines keeps its
+// colour.
+export function tokenizePythonLines(monaco: Monaco | null, text: string): PyTextRun[][] {
+  const lines = text.split('\n')
+  if (!monaco) return lines.map((line) => line === '' ? [] : [{ text: line }])
+  registerGlpythonPython(monaco)
+  const tokenized = monaco.editor.tokenize(text, GLPYTHON_PYTHON)
+  return lines.map((line, index) => {
+    const tokens = tokenized[index] ?? []
+    const runs: PyTextRun[] = []
+    if (tokens.length === 0 && line !== '') runs.push({ text: line })
+    for (let t = 0; t < tokens.length; t++) {
+      const start = tokens[t].offset
+      const end = t + 1 < tokens.length ? tokens[t + 1].offset : line.length
+      if (end > start) runs.push({ text: line.slice(start, end), className: pyTokenClassName(tokens[t].type) })
+    }
+    return runs
+  })
+}
