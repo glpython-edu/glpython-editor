@@ -559,6 +559,76 @@ try {
     }
     await page.close()
   }
+  // Lists as trees in call boxes (P56): in «Kasten» and «Baum», a box's row
+  // is one line - a list that reads as a tree is dotted and opens its tree
+  // over the code on hover or focus, like the footer's entries. The arrow
+  // from the name in the code still ends at the line; opening the tree
+  // changes no height; a list that isn't a tree has no hint.
+  for (const mode of ['box', 'tree']) {
+    const label = `listtree: trees in call boxes, ${mode === 'box' ? 'Kasten' : 'Baum'}`
+    const page = await openEmbed({}, `?features=run,repl,visualize,listtree,tree&visualizer=${mode}`)
+    const frame = page.frameLocator('#embed')
+    try {
+      const program = `def ist_ausgewertet(baum):\n    return isinstance(baum, int)\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    op = baum[0]\n    links = auswerten(baum[1])\n    rechts = auswerten(baum[2])\n    if op == '+':\n        return links + rechts\n    return links * rechts\n\ndef summe(zahlen):\n    ergebnis = zahlen[0] + zahlen[1] + zahlen[2]\n    return ergebnis\n\nauswerten(['+', 2, ['*', 3, 4]])\nsumme([1, 2, 3])\n`
+      await page.evaluate((source) => window.send('visualize', source), program)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      // The deepest call of auswerten: the most boxes.
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      const boxes = () => frame.locator('.frame-box[data-frame-id]').count()
+      let deepest = { boxes: 0, step: 0 }
+      for (let step = 1; await next.isEnabled() && step < 200; step++) {
+        await next.click()
+        const count = await boxes()
+        if (count > deepest.boxes) deepest = { boxes: count, step }
+      }
+      await frame.locator('.visualizer-controls button').nth(0).click()
+      for (let step = 0; step < deepest.step; step++) await next.click()
+      const rows = await frame.locator('.visualizer-canvas').evaluate(async (canvas) => {
+        await Promise.all(canvas.ownerDocument.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})))
+        return [...canvas.querySelectorAll('.frame-vars')].map((row) => ({ height: row.getBoundingClientRect().height, trees: row.querySelectorAll('.value-tree').length }))
+      })
+      const lineHeight = Math.min(...rows.map((row) => row.height))
+      assert.ok(rows.length >= 3 && rows.every((row) => row.trees === 0 && row.height <= lineHeight + 1), `every row one line: ${JSON.stringify(rows)}`)
+      const triggers = frame.locator('.visualizer-canvas .locals-value--tree')
+      // The inner box's row comes first: it is inside the outer box's code.
+      assert.deepEqual(await triggers.allInnerTexts(), ["['*', 3, 4]", "['+', 2, ['*', 3, 4]]"], 'the lists that read as a tree, dotted')
+      const reported = await page.evaluate(() => window.reported.height)
+      for (const [index, parts] of [[0, ['*', '3', '4']], [1, ['+', '2', '*', '3', '4']]]) {
+        await page.mouse.move(0, 0)
+        await frame.locator('.visualizer-tree-peek').waitFor({ state: 'detached', timeout: 5000 })
+        await triggers.nth(index).hover()
+        const peek = frame.locator('.visualizer-tree-peek')
+        await peek.locator('.value-tree').waitFor({ timeout: 3000 })
+        assert.deepEqual(await peek.locator('.value-tree-node, .value-tree-leaf').allInnerTexts(), parts, `the tree of box ${index + 1}`)
+        const inside = await peek.evaluate((element) => { const box = element.getBoundingClientRect(); const bounds = element.closest('.visualizer-frame').getBoundingClientRect(); return box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1 })
+        assert.ok(inside, 'inside the visualizer')
+      }
+      await page.waitForTimeout(300)
+      assert.equal(await page.evaluate(() => window.reported.height), reported, 'the open tree changes no height')
+      // The keyboard: focus opens it.
+      await page.mouse.move(0, 0)
+      await frame.locator('.visualizer-tree-peek').waitFor({ state: 'detached', timeout: 5000 })
+      await triggers.nth(1).focus()
+      await frame.locator('.visualizer-tree-peek').waitFor({ timeout: 3000 })
+      await triggers.nth(1).blur()
+      // The arrow from baum in ist_ausgewertet's call ends at a row's line.
+      const ends = await frame.locator('.visualizer-canvas').evaluate((canvas) => [...canvas.querySelectorAll('.visualizer-connectors > path')].flatMap((arrow) => [0, arrow.getTotalLength()].map((at) => arrow.getPointAtLength(at))).map((point) => ({ x: point.x, y: point.y })))
+      const lines = await frame.locator('.visualizer-canvas').evaluate((canvas) => { const origin = canvas.getBoundingClientRect(); return [...canvas.querySelectorAll('.frame-vars .locals-value')].map((value) => { const box = value.getBoundingClientRect(); return { left: box.left - origin.left, right: box.right - origin.left, top: box.top - origin.top, bottom: box.bottom - origin.top } }) })
+      if (ends.length > 0) assert.ok(ends.some((point) => lines.some((line) => point.x >= line.left - 2 && point.x <= line.right + 2 && point.y >= line.top - 2 && point.y <= line.bottom + 2)), `an arrow ends at a row's line: ${JSON.stringify({ ends, lines })}`)
+      // summe([1, 2, 3]) (a box: it has a local variable): a list, but not a
+      // tree - its line, no hint.
+      const zahlen = frame.locator('.frame-box .locals-row[data-name="zahlen"] .locals-value')
+      while (await next.isEnabled() && (await zahlen.count() === 0 || await zahlen.innerText() === '\u2026')) await next.click()
+      assert.equal(await frame.locator('.locals-row[data-name="zahlen"] .locals-value').innerText(), '[1, 2, 3]', 'the list [1, 2, 3]')
+      assert.equal(await frame.locator('.locals-row[data-name="zahlen"] .locals-value--tree').count(), 0, 'no hint on [1, 2, 3]')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
   // The global variables (P53): in a footer below the code that doesn't
   // scroll with it; the arrow from a call to a global function ends at its
   // entry there, also with the current line at the bottom of a long
