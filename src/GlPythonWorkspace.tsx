@@ -629,6 +629,20 @@ function FullValueDialog({ value, name, tree, t, onClose }: { value: FullValue; 
 type PeekAt<P> = { key: string; x: number; y: number; payload: P }
 const GLOBALS_PEEK_OPEN_DELAY = 120
 const GLOBALS_PEEK_CLOSE_DELAY = 180
+// Whether the viewer asked for reduced motion (P57): then the visualizer's
+// view scrolls without gliding, and the CSS stops every other movement.
+function useReducedMotion() {
+  const query = useMemo(() => typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null, [])
+  const [reduced, setReduced] = useState(() => query?.matches ?? false)
+  useEffect(() => {
+    if (!query) return
+    const update = () => setReduced(query.matches)
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [query])
+  return reduced
+}
+
 function useVisualizerPeek<P>(frameRef: { current: HTMLElement | null }, keepsOpen: (target: Node) => boolean) {
   const peekRef = useRef<HTMLDivElement>(null)
   const [peek, setPeek] = useState<PeekAt<P> | null>(null)
@@ -2250,6 +2264,16 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // (e.g. the user stepping again before it fires) can detach it instead of
   // leaving it to fire against a now-stale step.
   const growListenerRef = useRef<{ el: HTMLElement; handler: (event: AnimationEvent) => void } | null>(null)
+  // A box flying in from a row that doesn't scroll with the code (the
+  // footer's): its offset at the view's scroll position when it was
+  // measured. The view may scroll while it flies (following the step,
+  // smoothly), which would drag the box's path along; the scroll listener
+  // below adds the distance scrolled since, so its start stays where the row
+  // is in the frame and it flies on to where the box is now (P57).
+  const flyInRef = useRef<{ box: HTMLElement; dx: number; dy: number; scrollLeft: number; scrollTop: number } | null>(null)
+  const reducedMotion = useReducedMotion()
+  const reducedMotionRef = useRef(reducedMotion)
+  reducedMotionRef.current = reducedMotion
   const prevStepIndexRef = useRef(clampedStepIndex)
   const animationsEnabledRef = useRef(animationsEnabled)
   animationsEnabledRef.current = animationsEnabled
@@ -2525,6 +2549,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       return result
     }
 
+    flyInRef.current = null
     // Detach any previously-scheduled grow-animation listener before
     // (possibly) scheduling a new one below - otherwise a listener left over
     // from an earlier step the user has since moved away from could fire
@@ -2560,6 +2585,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
           const oy = originRect ? originRect.top - canvasRect.top + originRect.height / 2 : origin.y1
           boxEl.style.setProperty('--grow-dx', `${ox - cx}px`)
           boxEl.style.setProperty('--grow-dy', `${oy - cy}px`)
+          const view = visualizerScrollRef.current
+          flyInRef.current = view && animationsEnabledRef.current && origin.source.isConnected && !canvas.contains(origin.source) ? { box: boxEl, dx: ox - cx, dy: oy - cy, scrollLeft: view.scrollLeft, scrollTop: view.scrollTop } : null
         } else {
           boxEl.style.removeProperty('--grow-dx')
           boxEl.style.removeProperty('--grow-dy')
@@ -2583,6 +2610,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
             boxEl.removeEventListener('animationend', handleGrowEnd)
             boxEl.removeEventListener('animationcancel', handleGrowEnd)
             if (growListenerRef.current?.handler === handleGrowEnd) growListenerRef.current = null
+            if (flyInRef.current?.box === boxEl) flyInRef.current = null
             const argConnectors = buildArgConnectors(canvas.getBoundingClientRect())
             if (argConnectors.length === 0) return
             setConnectorPaths((current) => [...current, ...argConnectors])
@@ -2685,10 +2713,21 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       setConnectorPaths((current) => current.map(again))
     }
     const schedule = () => { if (!pending) pending = requestAnimationFrame(remeasure) }
+    // Right away, not in the next frame: the scroll and the new offset are
+    // then drawn together.
+    const follow = () => {
+      const flyIn = flyInRef.current
+      if (!flyIn) return
+      if (!flyIn.box.isConnected) { flyInRef.current = null; return }
+      flyIn.box.style.setProperty('--grow-dx', `${flyIn.dx + view.scrollLeft - flyIn.scrollLeft}px`)
+      flyIn.box.style.setProperty('--grow-dy', `${flyIn.dy + view.scrollTop - flyIn.scrollTop}px`)
+    }
+    view.addEventListener('scroll', follow, { passive: true })
     view.addEventListener('scroll', schedule, { passive: true })
     const observer = new ResizeObserver(schedule)
     observer.observe(frame)
     return () => {
+      view.removeEventListener('scroll', follow)
       view.removeEventListener('scroll', schedule)
       observer.disconnect()
       if (pending) cancelAnimationFrame(pending)
@@ -2750,7 +2789,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     let nextLeft = container.scrollLeft
     if (target.left - margin < nextLeft) nextLeft = target.left - margin
     else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
-    container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current ? 'smooth' : 'auto' })
+    container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
   }, [isVisualizing, currentTraceStep])
 
   // While stepping through one visualization the canvas only grows: a call

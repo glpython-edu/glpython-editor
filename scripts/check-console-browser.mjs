@@ -634,6 +634,98 @@ try {
     }
     await page.close()
   }
+  // A call box flies in from its function's entry in the footer (P57): its
+  // first frame is centred on that entry, also for a box inside a box that
+  // flew in itself (custom properties are inherited: such a box used to
+  // start from its caller's offset), at two widths. While the view scrolls
+  // after the step, the box stays on the line from the entry to where it is
+  // now (the scroll used to drag its path along). With reduced motion
+  // nothing moves: the box only fades in, the view doesn't glide, and the
+  // parameters' arrows still come.
+  {
+    const evaluator = `from parser import ist_liste\n\ndef ist_ausgewertet(baum):\n    if ist_liste(baum):\n        return False\n    else:\n        return True\n\ndef operator_anwenden(op, x, y):\n    if op == "+":\n        return x + y\n    if op == "*":\n        return x * y\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], auswerten(baum[1]), auswerten(baum[2]))\n\nauswerten(['+', 2, ['*', 3, 4]])\n`
+    const files = [{ path: 'main.py', source: evaluator }, { path: 'parser.py', source: 'def ist_liste(x):\n    return isinstance(x, list)\n' }]
+    for (const [width, cap, reduced] of [[760, 700, false], [480, 500, false], [760, 700, true]]) {
+      const label = `call boxes fly in from the footer, ${width}px${reduced ? ', reduced motion' : ''}`
+      const page = await openEmbed({}, `?features=visualize,listtree,tree&visualizer=box&cap=${cap}`, width)
+      if (reduced) await page.emulateMedia({ reducedMotion: 'reduce' })
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await measured(frame)
+        const child = page.frames()[1]
+        const next = frame.locator('.visualizer-controls button').nth(2)
+        const flights = []
+        for (let step = 1; await next.isEnabled() && step < 200; step++) {
+          // Follow the box that opens with this step, frame by frame: where it
+          // is, where it would be without its transform, and the entry of its
+          // function in the footer, all in the frame's coordinates.
+          await child.evaluate(() => {
+            for (const box of document.querySelectorAll('.frame-box[data-frame-id]')) box.dataset.seen = ''
+            window.flyIn = null
+            const view = document.querySelector('.visualizer-view')
+            let frames = 0
+            const look = () => {
+              const box = document.querySelector('.frame-box[data-frame-id]:not([data-seen])')
+              if (!box) { if (++frames < 60) requestAnimationFrame(look); return }
+              const bounds = () => document.querySelector('.visualizer-frame').getBoundingClientRect()
+              const centre = (rect, f) => [rect.left - f.left + rect.width / 2, rect.top - f.top + rect.height / 2]
+              const name = /def (\w+)\(/.exec(box.textContent)?.[1]
+              const entry = document.querySelector(`.visualizer-globals .locals-row[data-name="${name}"] .locals-value`)
+              const origin = centre(entry.getBoundingClientRect(), bounds())
+              const flyIn = window.flyIn = { name, origin, start: centre(box.getBoundingClientRect(), bounds()), offLine: 0, scrolled: 0, moved: false, opacity: Number(getComputedStyle(box).opacity), scroll: [view.scrollLeft, view.scrollTop], positions: [`${view.scrollLeft},${view.scrollTop}`], arrows: 0 }
+              const begun = performance.now()
+              const track = () => {
+                const f = bounds()
+                const at = centre(box.getBoundingClientRect(), f)
+                const matrix = new DOMMatrix(getComputedStyle(box).transform)
+                if (Math.abs(matrix.e) > 0.5 || Math.abs(matrix.f) > 0.5 || Math.abs(matrix.a - 1) > 0.01) flyIn.moved = true
+                const rest = [at[0] - matrix.e, at[1] - matrix.f]
+                const a = [at[0] - origin[0], at[1] - origin[1]]
+                const b = [rest[0] - origin[0], rest[1] - origin[1]]
+                const length = Math.hypot(b[0], b[1])
+                if (length > 1) flyIn.offLine = Math.max(flyIn.offLine, Math.abs(a[0] * b[1] - a[1] * b[0]) / length)
+                const position = `${view.scrollLeft},${view.scrollTop}`
+                if (flyIn.positions.at(-1) !== position) flyIn.positions.push(position)
+                flyIn.scrolled = Math.max(flyIn.scrolled, Math.abs(view.scrollLeft - flyIn.scroll[0]) + Math.abs(view.scrollTop - flyIn.scroll[1]))
+                if (performance.now() - begun < 450) requestAnimationFrame(track)
+                else flyIn.arrows = document.querySelectorAll('svg.visualizer-connectors > path').length
+              }
+              requestAnimationFrame(track)
+            }
+            requestAnimationFrame(look)
+          })
+          await next.click()
+          await page.waitForTimeout(650)
+          const flyIn = await child.evaluate(() => window.flyIn)
+          if (flyIn) flights.push({ step, ...flyIn })
+        }
+        assert.ok(flights.length >= 10, `the boxes that open: ${flights.length}`)
+        const at = (flight) => `step ${flight.step}, ${flight.name}`
+        if (reduced) {
+          for (const flight of flights) {
+            assert.ok(!flight.moved, `${at(flight)}: no movement`)
+            assert.ok(flight.opacity < 1, `${at(flight)}: it fades in (opacity ${flight.opacity})`)
+            assert.ok(flight.positions.length <= 2, `${at(flight)}: the view jumps to its place, doesn't glide: ${flight.positions.join(' → ')}`)
+            assert.ok(flight.arrows > 0, `${at(flight)}: the parameters' arrows`)
+          }
+        } else {
+          for (const flight of flights) {
+            assert.ok(Math.hypot(flight.start[0] - flight.origin[0], flight.start[1] - flight.origin[1]) <= 2, `${at(flight)}: starts at its entry in the footer: ${flight.start} vs ${flight.origin}`)
+            assert.ok(flight.offLine <= 3, `${at(flight)}: stays on its line while the view scrolls (${Math.round(flight.offLine)}px off)`)
+            assert.ok(flight.arrows > 0, `${at(flight)}: the parameters' arrows`)
+          }
+          if (width === 480) assert.ok(flights.some((flight) => flight.scrolled > 100), 'the view scrolls during a fly-in')
+        }
+        console.log(`${label}: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`${label}: ${error.message}`)
+      }
+      await page.close()
+    }
+  }
   // The global variables (P53): in a footer below the code that doesn't
   // scroll with it; the arrow from a call to a global function ends at its
   // entry there, also with the current line at the bottom of a long
