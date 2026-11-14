@@ -246,7 +246,7 @@ all optional.
 ### Lists as trees (`listTree`)
 
 With the capability `listTree` (off by default; the embed's `features=listtree`),
-a list that reads as a tree is drawn as one, below its text: a non-empty list
+a list that reads as a tree can be shown as one: a non-empty list
 whose first element is a string is a node with that label, its other
 elements are its children, a subtree where they read as a tree too, else a
 leaf. `['+', ['var', 'x'], ['f', 1, 2]]`:
@@ -261,11 +261,20 @@ leaf. `['+', ['var', 'x'], ['f', 1, 2]]`:
 
 Labels have no quotes, string leaves do. The rule is generic, so `['Anna', 'Ben']`
 is drawn too; the text stays as it is. Where:
-- **Variables of a call box:** below the value; a tree wider than the panel
-  (48 characters) has a link «Baum zeigen» (`showTree`) to the full-value
-  dialog instead. A global variable's tree is in its box (hover or tap its
-  entry in the footer), below the full value. The options menu's «Listen als
-  Baum zeigen» (`visualizerListTrees`) switches the trees off and on.
+- **Variables of a call box:** the row stays one line. The value is dotted
+  (like an abbreviated one) and opens its tree in a box over the code, as the
+  footer's entries do: hover over it, tap it or focus it. The box holds only
+  the tree (name and text are on the line below it), and there is no
+  tooltip; screen readers get «Baum zeigen» (`showTree`). It closes when the pointer leaves, on a tap
+  elsewhere or with Escape. The box opens upwards or downwards, wherever
+  there is more room, inside the visualizer; it moves nothing and doesn't
+  count towards the steady height. An arrow from a name in the code still
+  ends at the value. A list that doesn't read as a tree (`[1, 2, 3]`) is
+  plain text, without the dots.
+- **Global variables:** in the box of their entry in the footer (hover or
+  tap it), below the full value. The options menu's «Listen als Baum zeigen»
+  (`visualizerListTrees`) switches the trees off and on, here and in the
+  call boxes.
 - **Full-value dialog:** below the value's text.
 - **REPL:** a value that reads as a tree has a «Baum» button (`replShowTree`)
   next to «Visualisieren»; it shows the tree below the value and hides it
@@ -274,8 +283,8 @@ is drawn too; the text stays as it is. Where:
 A tree of more than 100 nodes, deeper than 10 or containing itself isn't
 drawn; long labels and leaves are shortened in their middle. For screen
 readers each tree is an image described by the list's text. A tree wider
-than its place (the console, the dialog, a global variable's box, a narrow
-panel) scrolls sideways:
+than its place (the console, the dialog, a box over the code) scrolls
+sideways:
 it starts with its root in the middle, a ‹ or › at an edge shows that more is
 hidden there, and it takes the focus, so the arrow keys, Home and End scroll
 it. The positions come from the package's own implementation of van der Ploeg's

@@ -292,8 +292,14 @@
 .visual-value-more-text { text-decoration: underline dotted; text-underline-offset: 3px; }
 .visual-value-more:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: 1px; }
 .locals-value-length { display: block; color: var(--glp-text-muted); font-size: 12px; }
-.locals-tree { flex-basis: 100%; min-width: 0; max-width: 100%; padding: 6px 0; }
-.locals-tree-more { flex-basis: auto; padding: 0; color: var(--glp-accent); font: 600 12px/1.6 var(--glp-font-ui); }
+/* A list in a call box's row that reads as a tree (P56): one line, dotted
+   like a value with more to it, opening its tree over the code on hover, tap
+   or focus (.visualizer-tree-peek, as the footer's entries do) - only the
+   tree, the line below already gives name and text. No tooltip: the dotted
+   line is the hint; screen readers get «Baum zeigen» (#glp-tree-peek-hint). */
+.locals-value--tree { padding: 0 4px; margin: 0 -4px; border-radius: var(--glp-radius); cursor: default; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.locals-value--tree:hover, .locals-value--tree[data-open] { background: var(--glp-bg); }
+.locals-value--tree:focus-visible { outline: 2px solid var(--glp-accent); outline-offset: -2px; }
 .visualizer-animated .visual-substituted-value { animation: visual-return-fly-in .4s ease-out backwards; }
 @keyframes visual-return-fly-in {
   from { transform: translate(var(--return-dx, 0px), var(--return-dy, 0px)); }
