@@ -767,6 +767,40 @@ try {
       await page.close()
     }
   }
+  // The embed's own heights (P58; --embed-* in src/embed/style.css): a
+  // visualization-only embed reports 160px until its program arrives; the
+  // console is as tall as its output up to 480px, then it scrolls; in an
+  // iframe shorter than a visualization the editor panel gives way down to
+  // 140px.
+  {
+    const label = 'the embed\'s own heights: loading state, console, editor panel'
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
+    try {
+      await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('&mode=eval', '&mode=visual') }))
+      await page.goto(`${origin}/check-console.html`)
+      await page.waitForFunction(() => window.ready && window.reported, null, { timeout: 120000 })
+      assert.equal(await page.evaluate(() => window.reported.height), 160, 'a visualization-only embed before its program')
+      await page.close()
+      const run = await openEmbed({}, '')
+      const frame = run.frameLocator('#embed')
+      await run.evaluate(() => window.send('run', 'for i in range(100):\n    print(i)'))
+      await frame.locator('.console').filter({ hasText: '99' }).waitFor({ timeout: 60000 })
+      const console_ = await frame.locator('.console').evaluate((element) => ({ height: element.getBoundingClientRect().height, scrolls: element.scrollHeight > element.clientHeight }))
+      assert.ok(Math.abs(console_.height - 480) <= 1 && console_.scrolls, `the console after 100 lines: ${JSON.stringify(console_)}`)
+      await run.close()
+      const short = await openEmbed({}, '?features=run,repl,visualize&cap=250')
+      await short.evaluate(() => window.send('visualize', Array.from({ length: 40 }, (_, i) => `x${i} = ${i}`).join('\n')))
+      await short.frameLocator('#embed').locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(short.frameLocator('#embed'))
+      const panel = await short.frameLocator('#embed').locator('.editor-panel').evaluate((element) => element.getBoundingClientRect().height)
+      assert.ok(Math.abs(panel - 140) <= 1, `the editor panel in a 250px iframe: ${panel}`)
+      await short.close()
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+  }
   // The global variables (P53): in a footer below the code that doesn't
   // scroll with it; the arrow from a call to a global function ends at its
   // entry there, also with the current line at the bottom of a long
