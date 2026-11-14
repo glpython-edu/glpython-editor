@@ -674,7 +674,7 @@ try {
               const name = /def (\w+)\(/.exec(box.textContent)?.[1]
               const entry = document.querySelector(`.visualizer-globals .locals-row[data-name="${name}"] .locals-value`)
               const origin = centre(entry.getBoundingClientRect(), bounds())
-              const flyIn = window.flyIn = { name, origin, start: centre(box.getBoundingClientRect(), bounds()), offLine: 0, scrolled: 0, moved: false, opacity: Number(getComputedStyle(box).opacity), scroll: [view.scrollLeft, view.scrollTop], positions: [`${view.scrollLeft},${view.scrollTop}`], arrows: 0 }
+              const flyIn = window.flyIn = { name, origin, start: centre(box.getBoundingClientRect(), bounds()), offLine: 0, scrolled: 0, moved: false, opacity: Number(getComputedStyle(box).opacity), scroll: [view.scrollLeft, view.scrollTop], positions: [`${view.scrollLeft},${view.scrollTop}`], arrows: 0, frames: [] }
               const begun = performance.now()
               const track = () => {
                 const f = bounds()
@@ -685,6 +685,7 @@ try {
                 const a = [at[0] - origin[0], at[1] - origin[1]]
                 const b = [rest[0] - origin[0], rest[1] - origin[1]]
                 const length = Math.hypot(b[0], b[1])
+                flyIn.frames.push([Math.round(performance.now() - begun), ...at.map(Math.round), ...rest.map(Math.round), view.scrollLeft, view.scrollTop, ...centre(entry.getBoundingClientRect(), f).map(Math.round), Math.round(f.height), box.style.getPropertyValue('--grow-dx'), box.style.getPropertyValue('--grow-dy')].join(' '))
                 if (length > 1) flyIn.offLine = Math.max(flyIn.offLine, Math.abs(a[0] * b[1] - a[1] * b[0]) / length)
                 const position = `${view.scrollLeft},${view.scrollTop}`
                 if (flyIn.positions.at(-1) !== position) flyIn.positions.push(position)
@@ -713,7 +714,7 @@ try {
         } else {
           for (const flight of flights) {
             assert.ok(Math.hypot(flight.start[0] - flight.origin[0], flight.start[1] - flight.origin[1]) <= 2, `${at(flight)}: starts at its entry in the footer: ${flight.start} vs ${flight.origin}`)
-            assert.ok(flight.offLine <= 3, `${at(flight)}: stays on its line while the view scrolls (${Math.round(flight.offLine)}px off)`)
+            assert.ok(flight.offLine <= 3, `${at(flight)}: stays on its line while the view scrolls (${Math.round(flight.offLine)}px off; t at rest scroll entry height dx dy: ${flight.frames.join(' | ')})`)
             assert.ok(flight.arrows > 0, `${at(flight)}: the parameters' arrows`)
           }
           if (width === 480) assert.ok(flights.some((flight) => flight.scrolled > 100), 'the view scrolls during a fly-in')
