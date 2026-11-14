@@ -263,8 +263,9 @@ Labels have no quotes, string leaves do. The rule is generic, so `['Anna', 'Ben'
 is drawn too; the text stays as it is. Where:
 - **Variables of a call box:** the row stays one line. The value is dotted
   (like an abbreviated one) and opens its tree in a box over the code, as the
-  footer's entries do: hover over it, tap it or focus it (title «Baum
-  zeigen», `showTree`); it closes when the pointer leaves, on a tap
+  footer's entries do: hover over it, tap it or focus it. The box holds only
+  the tree (name and text are on the line below it), and there is no
+  tooltip; screen readers get «Baum zeigen» (`showTree`). It closes when the pointer leaves, on a tap
   elsewhere or with Escape. The box opens upwards or downwards, wherever
   there is more room, inside the visualizer; it moves nothing and doesn't
   count towards the steady height. An arrow from a name in the code still

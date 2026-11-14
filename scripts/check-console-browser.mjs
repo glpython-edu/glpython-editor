@@ -603,6 +603,11 @@ try {
         assert.deepEqual(await peek.locator('.value-tree-node, .value-tree-leaf').allInnerTexts(), parts, `the tree of box ${index + 1}`)
         const inside = await peek.evaluate((element) => { const box = element.getBoundingClientRect(); const bounds = element.closest('.visualizer-frame').getBoundingClientRect(); return box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1 })
         assert.ok(inside, 'inside the visualizer')
+        // Only the tree: the line below already gives name, length and text.
+        assert.equal(await peek.locator('.locals-name, .locals-value-length, .visualizer-globals-value-text').count(), 0, 'only the tree in the box')
+        assert.equal(await triggers.nth(index).getAttribute('title'), null, 'no tooltip')
+        const description = await triggers.nth(index).evaluate((element) => element.getAttribute('aria-describedby').split(' ').map((id) => element.ownerDocument.getElementById(id)?.textContent ?? '').join(' '))
+        assert.ok(description.startsWith('Baum zeigen'), `the label for screen readers: ${description}`)
       }
       await page.waitForTimeout(300)
       assert.equal(await page.evaluate(() => window.reported.height), reported, 'the open tree changes no height')
