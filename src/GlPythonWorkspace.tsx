@@ -2267,10 +2267,12 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // A box flying in from a row that doesn't scroll with the code (the
   // footer's): its offset at the view's scroll position when it was
   // measured. The view may scroll while it flies (following the step,
-  // smoothly), which would drag the box's path along; the scroll listener
-  // below adds the distance scrolled since, so its start stays where the row
-  // is in the frame and it flies on to where the box is now (P57).
-  const flyInRef = useRef<{ box: HTMLElement; dx: number; dy: number; scrollLeft: number; scrollTop: number } | null>(null)
+  // smoothly), which would drag the box's path along; in every frame of its
+  // flight (followFlyIn) the distance scrolled since is added, so its start
+  // stays where the row is in the frame and it flies on to where the box is
+  // now (P57). In an animation frame, not on 'scroll': some browsers fire
+  // that a frame after the view has moved.
+  const flyInRef = useRef<{ box: HTMLElement; dx: number; dy: number; scrollLeft: number; scrollTop: number; until: number; frame: number } | null>(null)
   const reducedMotion = useReducedMotion()
   const reducedMotionRef = useRef(reducedMotion)
   reducedMotionRef.current = reducedMotion
@@ -2549,6 +2551,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       return result
     }
 
+    if (flyInRef.current) cancelAnimationFrame(flyInRef.current.frame)
     flyInRef.current = null
     // Detach any previously-scheduled grow-animation listener before
     // (possibly) scheduling a new one below - otherwise a listener left over
@@ -2586,7 +2589,18 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
           boxEl.style.setProperty('--grow-dx', `${ox - cx}px`)
           boxEl.style.setProperty('--grow-dy', `${oy - cy}px`)
           const view = visualizerScrollRef.current
-          flyInRef.current = view && animationsEnabledRef.current && origin.source.isConnected && !canvas.contains(origin.source) ? { box: boxEl, dx: ox - cx, dy: oy - cy, scrollLeft: view.scrollLeft, scrollTop: view.scrollTop } : null
+          if (view && animationsEnabledRef.current && origin.source.isConnected && !canvas.contains(origin.source)) {
+            const flyIn = { box: boxEl, dx: ox - cx, dy: oy - cy, scrollLeft: view.scrollLeft, scrollTop: view.scrollTop, until: performance.now() + 600, frame: 0 }
+            const followFlyIn = () => {
+              if (flyInRef.current !== flyIn) return
+              if (!boxEl.isConnected || performance.now() > flyIn.until) { flyInRef.current = null; return }
+              boxEl.style.setProperty('--grow-dx', `${flyIn.dx + view.scrollLeft - flyIn.scrollLeft}px`)
+              boxEl.style.setProperty('--grow-dy', `${flyIn.dy + view.scrollTop - flyIn.scrollTop}px`)
+              flyIn.frame = requestAnimationFrame(followFlyIn)
+            }
+            flyInRef.current = flyIn
+            flyIn.frame = requestAnimationFrame(followFlyIn)
+          }
         } else {
           boxEl.style.removeProperty('--grow-dx')
           boxEl.style.removeProperty('--grow-dy')
@@ -2610,7 +2624,6 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
             boxEl.removeEventListener('animationend', handleGrowEnd)
             boxEl.removeEventListener('animationcancel', handleGrowEnd)
             if (growListenerRef.current?.handler === handleGrowEnd) growListenerRef.current = null
-            if (flyInRef.current?.box === boxEl) flyInRef.current = null
             const argConnectors = buildArgConnectors(canvas.getBoundingClientRect())
             if (argConnectors.length === 0) return
             setConnectorPaths((current) => [...current, ...argConnectors])
@@ -2713,21 +2726,10 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       setConnectorPaths((current) => current.map(again))
     }
     const schedule = () => { if (!pending) pending = requestAnimationFrame(remeasure) }
-    // Right away, not in the next frame: the scroll and the new offset are
-    // then drawn together.
-    const follow = () => {
-      const flyIn = flyInRef.current
-      if (!flyIn) return
-      if (!flyIn.box.isConnected) { flyInRef.current = null; return }
-      flyIn.box.style.setProperty('--grow-dx', `${flyIn.dx + view.scrollLeft - flyIn.scrollLeft}px`)
-      flyIn.box.style.setProperty('--grow-dy', `${flyIn.dy + view.scrollTop - flyIn.scrollTop}px`)
-    }
-    view.addEventListener('scroll', follow, { passive: true })
     view.addEventListener('scroll', schedule, { passive: true })
     const observer = new ResizeObserver(schedule)
     observer.observe(frame)
     return () => {
-      view.removeEventListener('scroll', follow)
       view.removeEventListener('scroll', schedule)
       observer.disconnect()
       if (pending) cancelAnimationFrame(pending)

@@ -658,9 +658,10 @@ try {
         const next = frame.locator('.visualizer-controls button').nth(2)
         const flights = []
         for (let step = 1; await next.isEnabled() && step < 200; step++) {
-          // Follow the box that opens with this step, frame by frame: where it
-          // is, where it would be without its transform, and the entry of its
-          // function in the footer, all in the frame's coordinates.
+          // Follow the box that opens with this step, frame by frame (after
+          // each frame's animation callbacks: as drawn): where it is, where it
+          // would be without its transform, and the entry of its function in
+          // the footer, all in the frame's coordinates.
           await child.evaluate(() => {
             for (const box of document.querySelectorAll('.frame-box[data-frame-id]')) box.dataset.seen = ''
             window.flyIn = null
@@ -690,10 +691,10 @@ try {
                 const position = `${view.scrollLeft},${view.scrollTop}`
                 if (flyIn.positions.at(-1) !== position) flyIn.positions.push(position)
                 flyIn.scrolled = Math.max(flyIn.scrolled, Math.abs(view.scrollLeft - flyIn.scroll[0]) + Math.abs(view.scrollTop - flyIn.scroll[1]))
-                if (performance.now() - begun < 450) requestAnimationFrame(track)
+                if (performance.now() - begun < 450) requestAnimationFrame(() => setTimeout(track))
                 else flyIn.arrows = document.querySelectorAll('svg.visualizer-connectors > path').length
               }
-              requestAnimationFrame(track)
+              requestAnimationFrame(() => setTimeout(track))
             }
             requestAnimationFrame(look)
           })
