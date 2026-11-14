@@ -74,16 +74,55 @@ const passingEdited = program([['schnitt(4, 6)', '5'], ['schnitt(1, 2)', '1.5']]
 
 let failed = 0
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
+// Pyodide and Monaco come from jsDelivr (about 18 MB). Each case has a page
+// in a browser context of its own, so that storage, routes and headers don't
+// carry over - and a new context starts with an empty HTTP cache: every case
+// downloaded all of it again, some 25 times per run, and now and then a
+// download stalled past a case's 60 s (P58). Instead each file is fetched
+// once per run and served from memory to every context. A failed fetch is
+// not retried: the request fails, as it would in the browser.
+const cdn = new Map()
+let served = 0
+const newPage = async (options) => {
+  const context = await browser.newContext(options)
+  await context.route('https://cdn.jsdelivr.net/**', async (route) => {
+    const url = route.request().url()
+    served += 1
+    if (!cdn.has(url)) cdn.set(url, route.fetch().then(async (response) => ({ status: response.status(), headers: response.headers(), body: await response.body() })))
+    let file
+    try { file = await cdn.get(url) } catch { cdn.delete(url); return route.abort('failed') }
+    if (file.status >= 400) cdn.delete(url)
+    // The body is already decoded.
+    const headers = Object.fromEntries(Object.entries(file.headers).filter(([name]) => name !== 'content-encoding' && name !== 'content-length'))
+    await route.fulfill({ status: file.status, headers, body: file.body })
+  })
+  const page = await context.newPage()
+  page.on('close', () => { context.close().catch(() => {}) })
+  return page
+}
 try {
   for (let attempt = 0; ; attempt++) {
     try { await fetch(`${origin}/index.html`); break } catch { if (attempt > 50) throw new Error('vite preview did not start') }
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
+  // Pyodide's files first, before any case: then a case's 60 s are for
+  // Python, not for the network, and a CDN that doesn't answer is reported
+  // as such instead of as a slow case.
+  {
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
+    await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
+    await page.goto(`${origin}/check-console.html`)
+    await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
+    await page.evaluate(() => window.send('run', 'print("warm")'))
+    await page.frameLocator('#embed').locator('.console').filter({ hasText: 'warm' }).waitFor({ timeout: 300000 })
+      .catch(() => { throw new Error('Pyodide did not load from jsDelivr within 5 minutes') })
+    await page.close()
+  }
   for (const [label, first, second, firstSummary, secondSummary] of [
     ['Tests → fail → edit → Tests', failing, edited, '0 von 5 Beispielen bestanden', '1 von 5 Beispielen bestanden'],
     ['Tests → pass → edit → Tests', passing, passingEdited, '1 von 1 Beispielen bestanden', '2 von 2 Beispielen bestanden'],
   ]) {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
     await page.goto(`${origin}/check-console.html`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -115,7 +154,7 @@ try {
     await page.close()
   }
   // Edit → Tests → the REPL uses the new definition, without ▶ Run.
-  const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+  const page = await newPage({ viewport: { width: 800, height: 950 } })
   await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
   await page.goto(`${origin}/check-console.html`)
   await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -158,7 +197,7 @@ try {
     ['coverage: not without it in features', '?features=run,repl,visualize,tests', bewertung, null],
     ['coverage: not without features', '', bewertung, null],
   ]) {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness }))
     await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -181,7 +220,7 @@ try {
   const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
   const openEmbed = async (headers, query = '', width = 760) => {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('width:760px', `width:${width}px`), headers }))
     await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -1171,4 +1210,5 @@ try {
   stopServer()
 }
 if (failed > 0) process.exit(1)
+console.log(`jsDelivr: ${cdn.size} files fetched once, ${served - cdn.size} requests served from memory.`)
 console.log('Console browser checks passed.')
