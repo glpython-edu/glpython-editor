@@ -82,10 +82,12 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true })
 // once per run and served from memory to every context. A failed fetch is
 // not retried: the request fails, as it would in the browser.
 const cdn = new Map()
+let served = 0
 const newPage = async (options) => {
   const context = await browser.newContext(options)
   await context.route('https://cdn.jsdelivr.net/**', async (route) => {
     const url = route.request().url()
+    served += 1
     if (!cdn.has(url)) cdn.set(url, route.fetch().then(async (response) => ({ status: response.status(), headers: response.headers(), body: await response.body() })))
     let file
     try { file = await cdn.get(url) } catch { cdn.delete(url); return route.abort('failed') }
@@ -1208,4 +1210,5 @@ try {
   stopServer()
 }
 if (failed > 0) process.exit(1)
+console.log(`jsDelivr: ${cdn.size} files fetched once, ${served - cdn.size} requests served from memory.`)
 console.log('Console browser checks passed.')
