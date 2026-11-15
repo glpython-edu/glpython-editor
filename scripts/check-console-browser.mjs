@@ -1134,6 +1134,47 @@ try {
     }
     await page.close()
   }
+  // P61: a visualized REPL input starts with the session's globals in the
+  // footer - the file's functions and imported names, an earlier input's
+  // variable - and a name the input assigns appears during its steps.
+  {
+    const label = "a REPL input's footer: the session's globals"
+    const page = await openEmbed({}, '?features=run,repl,visualize')
+    const frame = page.frameLocator('#embed')
+    const names = () => frame.locator('.visualizer-globals-list .locals-row').evaluateAll((rows) => rows.map((row) => row.dataset.name))
+    const visualize = async (input) => {
+      await enterRepl(frame, input)
+      const entry = frame.locator('.repl-entry').last()
+      await entry.locator('.repl-entry-visualize:not([disabled])').waitFor({ timeout: 30000 })
+      await entry.locator('.repl-entry-visualize').click()
+      await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+    }
+    const leave = () => frame.getByRole('button', { name: 'Visualisierung beenden' }).click()
+    try {
+      await page.evaluate((source) => window.send('run', source), 'from math import sqrt\n\ndef auswerten(baum):\n    return baum\n\ndef berechnen(text):\n    return auswerten(int(text))\n')
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      await visualize('berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen'], 'before step 1: the file\'s names')
+      await frame.locator('.visualizer-controls button').nth(2).click()
+      assert.ok((await frame.locator('.visualizer-step-count').innerText()).startsWith('Schritt 1 von'), 'step 1 is the input\'s first step')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen'], 'step 1: still the file\'s names')
+      await leave()
+      await enterRepl(frame, 'x = 3')
+      await visualize('berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x'], 'an earlier input\'s x')
+      await leave()
+      await visualize('y = berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x'], 'before the input ran: no y')
+      await frame.locator('.visualizer-controls button').nth(3).click()
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x', 'y'], 'at the end: y as well')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
   // P49: a call of the learner's own function that returns None shows None
   // as its last step - a line of the program, a REPL input, a failing
   // doctest example - in each mode; print(...) and xs.append(...) keep their

@@ -1779,11 +1779,23 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   error_hint = None
   truncated = False
   value = None
+  session_globals = None
   try:
     module_vars = _glpython_new_main(main_path)
     _glpython_module_scope = _GlpythonScope(module_vars, parent=None, kind="module")
     if fill_scope is not None:
       fill_scope(_glpython_module_scope, trees)
+      # A REPL input doesn't run the file's "def"s and assignments, so no
+      # step of its own would show the session's globals (P61): they come
+      # with the result, as the state before its first step, with the full
+      # values and trees behind their texts.
+      session_globals = {"locals": _glpython_snapshot_locals(_glpython_module_scope)}
+      if _glpython_pending_abbreviations:
+        session_globals["fullValues"] = dict(_glpython_pending_abbreviations)
+        _glpython_pending_abbreviations.clear()
+      if _glpython_pending_trees:
+        session_globals["trees"] = dict(_glpython_pending_trees)
+        _glpython_pending_trees.clear()
     _glpython_current_path = main_path
     main_tree = trees.get(main_path)
     try:
@@ -1828,4 +1840,5 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
     "value": value,
     "values": _glpython_full_values,
     "trees": _glpython_trees,
+    "globals": session_globals,
   })

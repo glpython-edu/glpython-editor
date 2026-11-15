@@ -168,6 +168,21 @@ export type TraceResult = {
   // Per file, what call boxes leave out: comments and docstrings, as
   // [line, col, end line, end col] (see _glpython_hidden_ranges).
   hidden?: Record<string, Array<[number, number, number, number]>>
+  // A traced REPL input: the session's globals before its first step (the
+  // last Run's names and the earlier inputs'), with the full values and
+  // trees behind their texts (P61). See withSessionGlobals.
+  globals?: { locals: Record<string, string>; fullValues?: Record<string, number>; trees?: Record<string, number> } | null
+}
+
+// The trace with the session's globals (TraceResult.globals) as a module
+// step before the first one, for what reads the module frame's variables:
+// the footer, its full values and trees. Not for the steps themselves.
+export function withSessionGlobals(result: TraceResult | null): TraceStep[] {
+  const trace = result?.trace ?? []
+  const globals = result?.globals
+  if (!globals || Object.keys(globals.locals).length === 0) return trace
+  const before = { step: -1, path: '', func: '<module>', line: 0, endLine: 0, col: 0, endCol: 0, kind: 'exec', label: '', nodeId: -1, value: null, frameId: 0, locals: globals.locals, fullValues: globals.fullValues, trees: globals.trees } as unknown as TraceStep
+  return [before, ...trace]
 }
 
 // The tree of each panel value that reads as one, shown up to `uptoStep`
