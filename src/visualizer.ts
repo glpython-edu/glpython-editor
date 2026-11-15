@@ -172,7 +172,15 @@ export type TraceResult = {
   // last Run's names and the earlier inputs'), with the full values and
   // trees behind their texts (P61). See withSessionGlobals.
   globals?: { locals: Record<string, string>; fullValues?: Record<string, number>; trees?: Record<string, number> } | null
+  // The functions the traced file didn't define, by their panel text
+  // ("function@parser.py#parse"): what they do, not how (P62).
+  functions?: Record<string, ImportedFunction>
 }
+
+// A function imported from a library, another file or the standard library:
+// its signature (null if Python has none for it), its docstring without the
+// doctest examples, and where it comes from (a file or a module's name).
+export type ImportedFunction = { name: string; signature: string | null; doc: string | null; origin: string }
 
 // The trace with the session's globals (TraceResult.globals) as a module
 // step before the first one, for what reads the module frame's variables:

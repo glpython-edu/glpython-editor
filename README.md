@@ -141,7 +141,11 @@ earlier inputs assigned; what the input assigns appears during its steps. Hoveri
 a box over the code, upwards from the pointer and inside the visualizer (at
 most its width and ⅔ of its height, scrolling inside): a function's (or
 class's) whole definition, highlighted, also while it's open as a call box; any
-other value in full. The box stays while the pointer moves into it; it closes
+other value in full. A function the file imports (from a library such as a
+course's `parser.py`, another file or the standard library) reads `parse
+Funktion · parser.py`, and its box shows what it does, not how: its signature,
+its docstring without the doctest examples, and `aus parser.py` (`importedFrom`,
+optional); never its body. The box stays while the pointer moves into it; it closes
 when the pointer leaves both, on a tap elsewhere or with Escape. Arrows from a
 call to a global function, and between a global variable and the code, end at
 its entry in the footer. Text: `visualizerGlobals` (the footer's label for

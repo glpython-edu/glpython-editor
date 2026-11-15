@@ -174,8 +174,10 @@ def _glpython_describe_for_locals_panel(value):
   # (e.g. "<function fact at 0x7f3a2c0a1b80>") that's irrelevant to a
   # learner - the vars panel only needs to communicate *what kind of thing*
   # the name refers to, not its identity/address.
-  if isinstance(value, _GlpythonFunction) or isinstance(value, (_glpython_types.FunctionType, _glpython_types.BuiltinFunctionType, _glpython_types.LambdaType)):
+  if isinstance(value, _GlpythonFunction):
     return "function"
+  if isinstance(value, (_glpython_types.FunctionType, _glpython_types.BuiltinFunctionType, _glpython_types.MethodType)):
+    return _glpython_imported_function(value) or "function"
   if isinstance(value, type):
     return "class"
   if isinstance(value, _glpython_types.ModuleType):
@@ -183,6 +185,50 @@ def _glpython_describe_for_locals_panel(value):
   shown = _glpython_safe_repr(value)
   _glpython_note_tree(shown, value)
   return shown
+
+# A function the traced file didn't define itself - imported from a library
+# (parser.py), another file of the project or the standard library (P62):
+# the panels show it as "function@<origin>#<name>", and the trace's
+# "functions" says what it does, not how: its signature, its docstring
+# without the doctest examples, and where it comes from. Its body stays
+# hidden; a course hides how a library works. None for the file's own
+# functions (also those its fallback compiled, "<glpython>", and a REPL
+# input's, "<repl>").
+_glpython_functions = {}
+_glpython_defining_file = None
+
+def _glpython_imported_function(value):
+  import doctest
+  import inspect
+  func = getattr(value, "__func__", value)
+  code = getattr(func, "__code__", None)
+  if code is not None and code.co_filename in ("<glpython>", _GLPYTHON_REPL_PATH, _glpython_defining_file):
+    return None
+  if code is not None and code.co_filename in _glpython_own_files:
+    origin = code.co_filename[1:]
+  else:
+    owner = getattr(value, "__self__", None)
+    origin = getattr(value, "__module__", None) or (owner.__name__ if isinstance(owner, _glpython_types.ModuleType) else None)
+  name = getattr(value, "__name__", None)
+  if not origin or not name:
+    return None
+  key = f"function@{origin}#{getattr(value, '__qualname__', name)}"
+  if key not in _glpython_functions:
+    try:
+      signature = name + str(inspect.signature(value))
+    except (TypeError, ValueError):
+      signature = None
+    doc = inspect.getdoc(value)
+    if doc:
+      try:
+        parts = doctest.DocTestParser().parse(doc)
+        doc = "".join(part for part in parts if isinstance(part, str))
+      except ValueError:
+        pass
+      lines = [line.rstrip() for line in doc.strip().splitlines()]
+      doc = "\n".join(line for index, line in enumerate(lines) if line or (index > 0 and lines[index - 1])).strip() or None
+    _glpython_functions[key] = {"name": name, "signature": signature, "doc": doc or None, "origin": origin}
+  return key
 
 # The trees of the panel's values that read as one (_glpython_tree_of), for
 # "listtree": like the full values, the next recorded step gets them as
@@ -1649,7 +1695,9 @@ def _glpython_run_visual_repl(source, sources_json, main_path, namespace="repl")
 # Other values are deep-copied where possible, so the visualization is a dry
 # run that leaves the REPL's own lists etc. untouched.
 def _glpython_fill_scope_from_repl(scope, trees, main_path, values):
-  global _glpython_current_path
+  global _glpython_current_path, _glpython_defining_file
+  # The last Run's file is the learner's own, as in a visualization of it.
+  _glpython_defining_file = "/" + main_path
   import copy
   defs = {}
   for path, tree in trees.items():
@@ -1719,6 +1767,7 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   global _glpython_trace_log, _glpython_step_count, _glpython_stdout_len, _glpython_graphics_commands
   global _glpython_module_scope, _glpython_current_path, _glpython_current_func_stack, _glpython_call_depth
   global _glpython_frame_id_counter, _glpython_frame_stack, _glpython_pending_call_node, _glpython_last_call_frame_id
+  global _glpython_defining_file
   _glpython_trace_log = []
   _glpython_step_count = 0
   _glpython_pending_abbreviations.clear()
@@ -1736,6 +1785,8 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
   _glpython_last_call_frame_id = None
   _glpython_own_files.clear()
   _glpython_own_files.update(["<glpython>", _GLPYTHON_REPL_PATH, *("/" + path for path in sources if path != _GLPYTHON_REPL_PATH)])
+  _glpython_functions.clear()
+  _glpython_defining_file = "/" + main_path
 
   if "/" not in sys.path:
     sys.path.insert(0, "/")
@@ -1841,4 +1892,5 @@ def _glpython_trace_program(main_path, sources, fill_scope, report_value=False):
     "values": _glpython_full_values,
     "trees": _glpython_trees,
     "globals": session_globals,
+    "functions": _glpython_functions,
   })
