@@ -1134,6 +1134,37 @@ try {
     }
     await page.close()
   }
+  // P62: a function imported from a library or the standard library reads
+  // «Funktion · parser.py» in the footer, and its box shows what it does -
+  // the signature, the docstring without its examples, where it comes from -
+  // not its body; the file's own function shows its whole definition.
+  {
+    const label = 'imported functions in the footer: what they do, not how'
+    const main = 'from parser import ist_liste\nfrom math import sqrt\n\ndef auswerten(baum):\n    if ist_liste(baum):\n        return sqrt(baum[1])\n    return baum\n\nauswerten(4)\n'
+    const library = 'def ist_liste(x):\n    """Gibt True zurück, wenn x eine Liste ist.\n\n    >>> ist_liste([1])\n    True\n    >>> ist_liste(\n    ...     3)\n    False\n    """\n    return isinstance(x, list)\n'
+    const files = [{ path: 'main.py', source: main }, { path: 'parser.py', source: library }]
+    const page = await openEmbed({}, '?features=visualize&visualizer=box&cap=700')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const entries = await frame.locator('.visualizer-globals-list .locals-row').evaluateAll((rows) => rows.map((row) => row.innerText.replace(/\s+/g, ' ').trim()))
+      assert.deepEqual(entries, ['ist_liste Funktion · parser.py', 'sqrt Funktion · math', 'auswerten Funktion'], 'the entries')
+      const liste = (await (await peekOf(frame, 'ist_liste')).innerText()).replace(/\n+/g, '\n').trim()
+      assert.equal(liste, 'ist_liste(x)\nGibt True zurück, wenn x eine Liste ist.\naus parser.py', 'ist_liste: signature, docstring, origin')
+      const sqrt = (await (await peekOf(frame, 'sqrt')).innerText()).replace(/\n+/g, '\n').trim()
+      assert.equal(sqrt, 'sqrt(x, /)\nReturn the square root of x.\naus math', 'sqrt: from the standard library')
+      const own = await (await peekOf(frame, 'auswerten')).innerText()
+      assert.ok(own.startsWith('def auswerten(baum):') && own.includes('return baum'), `the file's own function: its definition (${own})`)
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
   // P61: a visualized REPL input starts with the session's globals in the
   // footer - the file's functions and imported names, an earlier input's
   // variable - and a name the input assigns appears during its steps.

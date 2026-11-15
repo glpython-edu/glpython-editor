@@ -5,7 +5,7 @@ import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
 import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -133,6 +133,8 @@ type CoreStrings = {
   testsExamplesError?: (message: string) => string
   valueKindClass?: string
   valueKindModule?: string
+  // An imported function's box in the footer (P62): where it comes from, e.g. «aus parser.py».
+  importedFrom?: (origin: string) => string
   closeFile: (path: string) => string
   output: string
   pyodideRuntime: string
@@ -538,8 +540,24 @@ function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind
 // (see fullValuesUpTo), and how to open one in FullValueDialog.
 // With listtree, also the trees of the panel's values (see valueTreesUpTo),
 // `showTrees` while its switch is on.
-type FullValueAccess = { values: Map<string, FullValue>; trees: Map<string, ValueTree>; showTrees: boolean; open: (value: FullValue, name: string | null, tree?: ValueTree) => void; t: CoreStrings }
+type FullValueAccess = { values: Map<string, FullValue>; trees: Map<string, ValueTree>; showTrees: boolean; open: (value: FullValue, name: string | null, tree?: ValueTree) => void; t: CoreStrings; functions?: Record<string, ImportedFunction> }
 const FullValueContext = createContext<FullValueAccess | null>(null)
+
+// A function the traced file didn't define (P62) reads
+// "function@<origin>#<name>" in the panels: shown as its kind with a quiet
+// marker of where it comes from («Funktion · parser.py»).
+function importedFunctionOrigin(value: string): string | null {
+  return value.startsWith('function@') && value.includes('#') ? value.slice('function@'.length, value.lastIndexOf('#')) : null
+}
+function valueKindText(labels: Record<string, string>, value: string): string | null {
+  if (Object.hasOwn(labels, value)) return labels[value]
+  const origin = importedFunctionOrigin(value)
+  return origin === null ? null : `${labels.function} · ${origin}`
+}
+function valueKindNode(labels: Record<string, string>, value: string): ReactNode {
+  const origin = importedFunctionOrigin(value)
+  return origin === null ? labels[value] : <>{labels.function}<span className="locals-value-origin"> · {origin}</span></>
+}
 
 // A loop variable's annotation reads "=[1, 2, …, 100]".
 function lookupFullValue(access: FullValueAccess | null, text: string): FullValue | null {
@@ -719,7 +737,7 @@ function useVisualizerPeek<P>(frameRef: { current: HTMLElement | null }, keepsOp
 function ValuePeekContent({ name, value, valueKindLabels }: { name: string; value: string | null; valueKindLabels: Record<string, string> }) {
   const access = useContext(FullValueContext)
   const full = value === null ? null : lookupFullValue(access, value)
-  const text = value === null ? '\u2026' : Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : full ? `${full.text}${full.cut ? '\u2026' : ''}` : value
+  const text = value === null ? '\u2026' : valueKindText(valueKindLabels, value) !== null ? valueKindText(valueKindLabels, value) : full ? `${full.text}${full.cut ? '\u2026' : ''}` : value
   const length = full && access ? fullValueLength(full, access.t) : null
   const tree = value !== null && access?.showTrees ? access.trees.get(value) : undefined
   return <>
@@ -727,6 +745,17 @@ function ValuePeekContent({ name, value, valueKindLabels }: { name: string; valu
     <pre className="visualizer-globals-value-text">{text}</pre>
     {full?.cut && access && <p className="full-value-cut">{access.t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
     {tree && <GlobalsPeekTree tree={tree} label={value ?? ''} />}
+  </>
+}
+
+// An imported function's box (P62): what it does, not how - its signature,
+// its docstring without the doctest examples, where it comes from; never its
+// body, which a course may hide on purpose (a library like parser.py).
+function ImportedFunctionPeek({ imported, monaco, t }: { imported: ImportedFunction; monaco: Monaco | null; t: CoreStrings | undefined }) {
+  return <>
+    <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, imported.signature ?? imported.name).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
+    {imported.doc && <p className="visualizer-globals-doc">{imported.doc}</p>}
+    <p className="visualizer-globals-origin">{t?.importedFrom?.(imported.origin) ?? `from ${imported.origin}`}</p>
   </>
 }
 
@@ -768,18 +797,21 @@ function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf,
   let peekContent: ReactNode = null
   if (shownEntry) {
     const [name, value] = shownEntry
+    const imported = value !== null ? access?.functions?.[value] : undefined
     const definition = value !== null && (value === 'function' || value === 'class') ? definitionOf(name) : null
-    peekContent = definition
+    peekContent = imported
+      ? <ImportedFunctionPeek imported={imported} monaco={monaco} t={access?.t} />
+      : definition
       ? <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, definition.text).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
       : <ValuePeekContent name={name} value={value} valueKindLabels={valueKindLabels} />
   }
   return (
     <>
       <div className="visualizer-globals" ref={footerRef}>
-        <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : value}</span></div>)}</div>
+        <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{valueKindText(valueKindLabels, value) ?? value}</span></div>)}</div>
         <div className="visualizer-globals-list" role="list" aria-label={access?.t.visualizerGlobals ?? 'Global variables'}>{entries.map(([name, value]) => <div className="locals-row" role="listitem" key={name} data-name={name} tabIndex={0} aria-describedby={shownEntry?.[0] === name ? peekId : undefined} {...handlers(name, null)}>
           <span className="locals-name">{name}</span>
-          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <span className="locals-value" key={value}>{value}</span>}
+          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : valueKindText(valueKindLabels, value) !== null ? <span className="locals-value locals-value-kind" key={value}>{valueKindNode(valueKindLabels, value)}</span> : <span className="locals-value" key={value}>{value}</span>}
         </div>)}</div>
       </div>
       {peekContent && <div className="visualizer-globals-peek" id={peekId} {...boxProps}>{peekContent}</div>}
@@ -1298,7 +1330,7 @@ function Frame(props: FrameProps) {
       {!isModule && localEntries.length > 0 && <>
         <div className="frame-divider" />
         <div className="frame-vars">
-          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" peekKey={`${frameId}:${name}`} />}</div>)}
+          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : valueKindText(valueKindLabels, value) !== null ? <span className="locals-value locals-value-kind" key={value}>{valueKindNode(valueKindLabels, value)}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" peekKey={`${frameId}:${name}`} />}</div>)}
         </div>
       </>}
     </div>
@@ -2120,6 +2152,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // A traced REPL input starts with the session's globals in the footer (P61).
   const globalsTrace = useMemo(() => withSessionGlobals(visualTrace), [visualTrace])
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
+    functions: visualTrace?.functions,
     values: fullValuesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.values),
     trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
     showTrees: workspaceCapabilities.listTree && showListTrees,
@@ -2896,7 +2929,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const steadyMeasureNode = steadyMeasureCurrent && steadyMeasure.pending.length > 0 && visualTrace ? <div className="visualizer-measure" ref={steadyMeasureRef} aria-hidden="true" inert style={{ width: steadyMeasure.width }}>{steadyMeasure.pending.slice(0, STEADY_HEIGHT_BATCH).map((index) => {
     const view = stepViewAt(visualTrace.trace, visualTraceSteps, index, astIndexByFile, substitutionMode, treeSteps?.episodes ?? null)
     const step = view.currentStep?.step ?? -1
-    const access: FullValueAccess = { values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
+    const access: FullValueAccess = { functions: visualTrace.functions, values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
     return <div key={index} className="visualizer-canvas" data-measure-step={index}><FullValueContext.Provider value={access}>{rootFrame(view)}</FullValueContext.Provider></div>
   })}</div> : null
 

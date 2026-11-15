@@ -216,6 +216,11 @@
    max-height set by GlobalsFooter), at most its width; longer content scrolls. */
 .visualizer-globals-peek { position: absolute; z-index: 30; left: 0; box-sizing: border-box; width: max-content; max-width: 100%; overflow: auto; padding: 8px 12px; background: var(--glp-bg); border: 1px solid var(--glp-border); border-radius: var(--glp-radius); box-shadow: 0 8px 20px rgba(0, 0, 0, .12); overscroll-behavior: contain; }
 .visualizer-globals-definition { margin: 0; font: inherit; white-space: pre; }
+/* An imported function's box (P62): its docstring as prose, then its origin. */
+.visualizer-globals-doc { margin: 6px 0 0; max-width: 60ch; font-family: var(--glp-font-ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.visualizer-globals-origin { margin: 6px 0 0; color: var(--glp-text-muted); font-size: .9em; }
+/* An imported function's marker in the panels: «Funktion · parser.py». */
+.locals-value-origin { color: var(--glp-text-muted); }
 .visualizer-globals-value { display: flex; align-items: baseline; gap: 10px; }
 .visualizer-globals-value .locals-value-length { display: inline; }
 .visualizer-globals-value-text { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
