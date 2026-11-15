@@ -15,12 +15,29 @@ body,
   margin: 0;
 }
 
+/* The embed's own heights, in one place. The host decides how tall the
+   iframe is (the LiaScript macro: glpython-liascript's README «Height»);
+   the embed reports what its content needs (naturalHeight in App.tsx),
+   within these limits. */
 .embed-app {
-  min-height: 160px;
+  /* The least the embed is, and so what it reports while it loads (the
+     macro's minimums, 170px and 190px, are a little more). */
+  --embed-min-height: 160px;
+  /* The least the workspace inside it is. */
+  --embed-workspace-min-height: 136px;
+  /* The editor panel (file tabs and code area) in an iframe shorter than
+     the content: it gives way down to this, the bars don't. */
+  --embed-editor-panel-min-height: 140px;
+  /* The console: as tall as its output up to this, then it scrolls. */
+  --embed-console-max-height: 480px;
+}
+
+.embed-app {
+  min-height: var(--embed-min-height);
 }
 
 .embed-app .glpython-workspace {
-  min-height: 136px;
+  min-height: var(--embed-workspace-min-height);
 }
 
 /* Flat: the host draws one frame around the block (the LiaScript macro's
@@ -104,7 +121,7 @@ body,
 
 .embed-app .editor-column > .editor-panel {
   flex-shrink: 1;
-  min-height: 140px;
+  min-height: var(--embed-editor-panel-min-height);
 }
 
 .embed-app .editor-wrap {
@@ -130,7 +147,7 @@ body,
    printing in a loop scrolls there, following its newest line, rather than
    stretching the course page. */
 .embed-app .console {
-  max-height: 480px;
+  max-height: var(--embed-console-max-height);
 }
 
 /* "?size=large": bigger code (20px, line height 1.6) and the bar's text

@@ -263,7 +263,11 @@
    --grow-dx/--grow-dy offset the layout effect stashes on it in App.tsx -
    while blowing up from small to full size and fading in. Boxes with no
    such predecessor just blow up in place, since the custom properties
-   default to no offset. */
+   default to no offset.
+   Every box sets both properties itself (0 unless the layout effect gives
+   it an offset): custom properties are inherited, and a new box inside a
+   box that flew in would otherwise start from its caller's offset (P57). */
+.frame-box { --grow-dx: 0px; --grow-dy: 0px; }
 .visualizer-animated .frame-box:not(.frame-box--root) { animation: visual-frame-grow .42s ease-out backwards; }
 .visualizer-animated .locals-row { animation: visual-fade-in .22s ease; }
 .visualizer-animated .visualizer-connectors path { animation: visual-fade-in .3s ease backwards; }
@@ -283,7 +287,7 @@
    offset, i.e. no visible motion at all. `display: inline-block` is needed
    for the transform to take effect, since these spans otherwise lay out as
    plain inline text. */
-.visual-substituted-value { display: inline-block; }
+.visual-substituted-value { display: inline-block; --return-dx: 0px; --return-dy: 0px; }
 /* A long value stays inline and wraps where the line ends instead of running
    on below the variables panel (and isn't flown in). */
 .visual-substituted-value--long { display: inline; white-space: pre-wrap; overflow-wrap: anywhere; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
@@ -329,6 +333,18 @@
   100% { offset-distance: 100%; opacity: 0; }
 }
 @keyframes visual-flight-arrow-fade { 0% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+/* Reduced motion (P57): nothing moves - a new box fades in where it lands, a
+   return value appears in place, no value travels along its arrow (the
+   arrow still fades), and the view scrolls without gliding (App.tsx). The
+   short fades and highlights stay. The keyframes keep their names, since
+   the layout effect waits for visual-frame-grow's end to draw the
+   parameters' arrows. */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes visual-frame-grow { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes visual-return-fly-in { from { opacity: 1; } to { opacity: 1; } }
+  .visualizer-animated .frame-box:not(.frame-box--root) { animation-duration: .22s; }
+  .visual-flight-value { display: none; }
+}
 
 .visualizer-scrubber-track { position: relative; flex: 1; display: flex; align-items: center; min-width: 60px; }
 .visualizer-scrubber-track .visualizer-scrubber { width: 100%; margin: 0; }

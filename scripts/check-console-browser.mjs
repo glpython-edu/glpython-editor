@@ -74,16 +74,55 @@ const passingEdited = program([['schnitt(4, 6)', '5'], ['schnitt(1, 2)', '1.5']]
 
 let failed = 0
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
+// Pyodide and Monaco come from jsDelivr (about 18 MB). Each case has a page
+// in a browser context of its own, so that storage, routes and headers don't
+// carry over - and a new context starts with an empty HTTP cache: every case
+// downloaded all of it again, some 25 times per run, and now and then a
+// download stalled past a case's 60 s (P58). Instead each file is fetched
+// once per run and served from memory to every context. A failed fetch is
+// not retried: the request fails, as it would in the browser.
+const cdn = new Map()
+let served = 0
+const newPage = async (options) => {
+  const context = await browser.newContext(options)
+  await context.route('https://cdn.jsdelivr.net/**', async (route) => {
+    const url = route.request().url()
+    served += 1
+    if (!cdn.has(url)) cdn.set(url, route.fetch().then(async (response) => ({ status: response.status(), headers: response.headers(), body: await response.body() })))
+    let file
+    try { file = await cdn.get(url) } catch { cdn.delete(url); return route.abort('failed') }
+    if (file.status >= 400) cdn.delete(url)
+    // The body is already decoded.
+    const headers = Object.fromEntries(Object.entries(file.headers).filter(([name]) => name !== 'content-encoding' && name !== 'content-length'))
+    await route.fulfill({ status: file.status, headers, body: file.body })
+  })
+  const page = await context.newPage()
+  page.on('close', () => { context.close().catch(() => {}) })
+  return page
+}
 try {
   for (let attempt = 0; ; attempt++) {
     try { await fetch(`${origin}/index.html`); break } catch { if (attempt > 50) throw new Error('vite preview did not start') }
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
+  // Pyodide's files first, before any case: then a case's 60 s are for
+  // Python, not for the network, and a CDN that doesn't answer is reported
+  // as such instead of as a slow case.
+  {
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
+    await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
+    await page.goto(`${origin}/check-console.html`)
+    await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
+    await page.evaluate(() => window.send('run', 'print("warm")'))
+    await page.frameLocator('#embed').locator('.console').filter({ hasText: 'warm' }).waitFor({ timeout: 300000 })
+      .catch(() => { throw new Error('Pyodide did not load from jsDelivr within 5 minutes') })
+    await page.close()
+  }
   for (const [label, first, second, firstSummary, secondSummary] of [
     ['Tests → fail → edit → Tests', failing, edited, '0 von 5 Beispielen bestanden', '1 von 5 Beispielen bestanden'],
     ['Tests → pass → edit → Tests', passing, passingEdited, '1 von 1 Beispielen bestanden', '2 von 2 Beispielen bestanden'],
   ]) {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
     await page.goto(`${origin}/check-console.html`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -115,7 +154,7 @@ try {
     await page.close()
   }
   // Edit → Tests → the REPL uses the new definition, without ▶ Run.
-  const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+  const page = await newPage({ viewport: { width: 800, height: 950 } })
   await page.route(`${origin}/check-console.html`, (route) => route.fulfill({ contentType: 'text/html', body: harness }))
   await page.goto(`${origin}/check-console.html`)
   await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -158,7 +197,7 @@ try {
     ['coverage: not without it in features', '?features=run,repl,visualize,tests', bewertung, null],
     ['coverage: not without features', '', bewertung, null],
   ]) {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness }))
     await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -181,7 +220,7 @@ try {
   const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
   const openEmbed = async (headers, query = '', width = 760) => {
-    const page = await browser.newPage({ viewport: { width: 800, height: 950 } })
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('width:760px', `width:${width}px`), headers }))
     await page.goto(`${origin}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
@@ -634,6 +673,134 @@ try {
     }
     await page.close()
   }
+  // A call box flies in from its function's entry in the footer (P57): its
+  // first frame is centred on that entry, also for a box inside a box that
+  // flew in itself (custom properties are inherited: such a box used to
+  // start from its caller's offset), at two widths. While the view scrolls
+  // after the step, the box stays on the line from the entry to where it is
+  // now (the scroll used to drag its path along). With reduced motion
+  // nothing moves: the box only fades in, the view doesn't glide, and the
+  // parameters' arrows still come.
+  {
+    const evaluator = `from parser import ist_liste\n\ndef ist_ausgewertet(baum):\n    if ist_liste(baum):\n        return False\n    else:\n        return True\n\ndef operator_anwenden(op, x, y):\n    if op == "+":\n        return x + y\n    if op == "*":\n        return x * y\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], auswerten(baum[1]), auswerten(baum[2]))\n\nauswerten(['+', 2, ['*', 3, 4]])\n`
+    const files = [{ path: 'main.py', source: evaluator }, { path: 'parser.py', source: 'def ist_liste(x):\n    return isinstance(x, list)\n' }]
+    for (const [width, cap, reduced] of [[760, 700, false], [480, 500, false], [760, 700, true]]) {
+      const label = `call boxes fly in from the footer, ${width}px${reduced ? ', reduced motion' : ''}`
+      const page = await openEmbed({}, `?features=visualize,listtree,tree&visualizer=box&cap=${cap}`, width)
+      if (reduced) await page.emulateMedia({ reducedMotion: 'reduce' })
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await measured(frame)
+        const child = page.frames()[1]
+        const next = frame.locator('.visualizer-controls button').nth(2)
+        const flights = []
+        for (let step = 1; await next.isEnabled() && step < 200; step++) {
+          // Follow the box that opens with this step, frame by frame (after
+          // each frame's animation callbacks: as drawn): where it is, where it
+          // would be without its transform, and the entry of its function in
+          // the footer, all in the frame's coordinates.
+          await child.evaluate(() => {
+            for (const box of document.querySelectorAll('.frame-box[data-frame-id]')) box.dataset.seen = ''
+            window.flyIn = null
+            const view = document.querySelector('.visualizer-view')
+            let frames = 0
+            const look = () => {
+              const box = document.querySelector('.frame-box[data-frame-id]:not([data-seen])')
+              if (!box) { if (++frames < 60) requestAnimationFrame(look); return }
+              const bounds = () => document.querySelector('.visualizer-frame').getBoundingClientRect()
+              const centre = (rect, f) => [rect.left - f.left + rect.width / 2, rect.top - f.top + rect.height / 2]
+              const name = /def (\w+)\(/.exec(box.textContent)?.[1]
+              const entry = document.querySelector(`.visualizer-globals .locals-row[data-name="${name}"] .locals-value`)
+              const origin = centre(entry.getBoundingClientRect(), bounds())
+              const flyIn = window.flyIn = { name, origin, start: centre(box.getBoundingClientRect(), bounds()), offLine: 0, scrolled: 0, moved: false, opacity: Number(getComputedStyle(box).opacity), scroll: [view.scrollLeft, view.scrollTop], positions: [`${view.scrollLeft},${view.scrollTop}`], arrows: 0, frames: [] }
+              const begun = performance.now()
+              const track = () => {
+                const f = bounds()
+                const at = centre(box.getBoundingClientRect(), f)
+                const matrix = new DOMMatrix(getComputedStyle(box).transform)
+                if (Math.abs(matrix.e) > 0.5 || Math.abs(matrix.f) > 0.5 || Math.abs(matrix.a - 1) > 0.01) flyIn.moved = true
+                const rest = [at[0] - matrix.e, at[1] - matrix.f]
+                const a = [at[0] - origin[0], at[1] - origin[1]]
+                const b = [rest[0] - origin[0], rest[1] - origin[1]]
+                const length = Math.hypot(b[0], b[1])
+                flyIn.frames.push([Math.round(performance.now() - begun), ...at.map(Math.round), ...rest.map(Math.round), view.scrollLeft, view.scrollTop, ...centre(entry.getBoundingClientRect(), f).map(Math.round), Math.round(f.height), box.style.getPropertyValue('--grow-dx'), box.style.getPropertyValue('--grow-dy')].join(' '))
+                if (length > 1) flyIn.offLine = Math.max(flyIn.offLine, Math.abs(a[0] * b[1] - a[1] * b[0]) / length)
+                const position = `${view.scrollLeft},${view.scrollTop}`
+                if (flyIn.positions.at(-1) !== position) flyIn.positions.push(position)
+                flyIn.scrolled = Math.max(flyIn.scrolled, Math.abs(view.scrollLeft - flyIn.scroll[0]) + Math.abs(view.scrollTop - flyIn.scroll[1]))
+                if (performance.now() - begun < 450) requestAnimationFrame(() => setTimeout(track))
+                else flyIn.arrows = document.querySelectorAll('svg.visualizer-connectors > path').length
+              }
+              requestAnimationFrame(() => setTimeout(track))
+            }
+            requestAnimationFrame(look)
+          })
+          await next.click()
+          await page.waitForTimeout(650)
+          const flyIn = await child.evaluate(() => window.flyIn)
+          if (flyIn) flights.push({ step, ...flyIn })
+        }
+        assert.ok(flights.length >= 10, `the boxes that open: ${flights.length}`)
+        const at = (flight) => `step ${flight.step}, ${flight.name}`
+        if (reduced) {
+          for (const flight of flights) {
+            assert.ok(!flight.moved, `${at(flight)}: no movement`)
+            assert.ok(flight.opacity < 1, `${at(flight)}: it fades in (opacity ${flight.opacity})`)
+            assert.ok(flight.positions.length <= 2, `${at(flight)}: the view jumps to its place, doesn't glide: ${flight.positions.join(' → ')}`)
+            assert.ok(flight.arrows > 0, `${at(flight)}: the parameters' arrows`)
+          }
+        } else {
+          for (const flight of flights) {
+            assert.ok(Math.hypot(flight.start[0] - flight.origin[0], flight.start[1] - flight.origin[1]) <= 2, `${at(flight)}: starts at its entry in the footer: ${flight.start} vs ${flight.origin}`)
+            assert.ok(flight.offLine <= 3, `${at(flight)}: stays on its line while the view scrolls (${Math.round(flight.offLine)}px off; t at rest scroll entry height dx dy: ${flight.frames.join(' | ')})`)
+            assert.ok(flight.arrows > 0, `${at(flight)}: the parameters' arrows`)
+          }
+          if (width === 480) assert.ok(flights.some((flight) => flight.scrolled > 100), 'the view scrolls during a fly-in')
+        }
+        console.log(`${label}: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`${label}: ${error.message}`)
+      }
+      await page.close()
+    }
+  }
+  // The embed's own heights (P58; --embed-* in src/embed/style.css): a
+  // visualization-only embed reports 160px until its program arrives; the
+  // console is as tall as its output up to 480px, then it scrolls; in an
+  // iframe shorter than a visualization the editor panel gives way down to
+  // 140px.
+  {
+    const label = 'the embed\'s own heights: loading state, console, editor panel'
+    const page = await newPage({ viewport: { width: 800, height: 950 } })
+    try {
+      await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('&mode=eval', '&mode=visual') }))
+      await page.goto(`${origin}/check-console.html`)
+      await page.waitForFunction(() => window.ready && window.reported, null, { timeout: 120000 })
+      assert.equal(await page.evaluate(() => window.reported.height), 160, 'a visualization-only embed before its program')
+      await page.close()
+      const run = await openEmbed({}, '')
+      const frame = run.frameLocator('#embed')
+      await run.evaluate(() => window.send('run', 'for i in range(100):\n    print(i)'))
+      await frame.locator('.console').filter({ hasText: '99' }).waitFor({ timeout: 60000 })
+      const console_ = await frame.locator('.console').evaluate((element) => ({ height: element.getBoundingClientRect().height, scrolls: element.scrollHeight > element.clientHeight }))
+      assert.ok(Math.abs(console_.height - 480) <= 1 && console_.scrolls, `the console after 100 lines: ${JSON.stringify(console_)}`)
+      await run.close()
+      const short = await openEmbed({}, '?features=run,repl,visualize&cap=250')
+      await short.evaluate(() => window.send('visualize', Array.from({ length: 40 }, (_, i) => `x${i} = ${i}`).join('\n')))
+      await short.frameLocator('#embed').locator('.visualizer-step-count').waitFor({ timeout: 60000 })
+      await measured(short.frameLocator('#embed'))
+      const panel = await short.frameLocator('#embed').locator('.editor-panel').evaluate((element) => element.getBoundingClientRect().height)
+      assert.ok(Math.abs(panel - 140) <= 1, `the editor panel in a 250px iframe: ${panel}`)
+      await short.close()
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+  }
   // The global variables (P53): in a footer below the code that doesn't
   // scroll with it; the arrow from a call to a global function ends at its
   // entry there, also with the current line at the bottom of a long
@@ -1077,4 +1244,5 @@ try {
   stopServer()
 }
 if (failed > 0) process.exit(1)
+console.log(`jsDelivr: ${cdn.size} files fetched once, ${served - cdn.size} requests served from memory.`)
 console.log('Console browser checks passed.')

@@ -117,6 +117,13 @@ last step, the scrubber, the step counter, the box/substitution switch, the
 copy button) and ✕ to exit (`visualizerFirstStep`, `visualizerLastStep`,
 `visualizerOptions`; ✕ uses `exitVisualizer`).
 
+With animated steps, a call box flies in from its function's entry (in the
+footer of global variables), and a return value slides from the box's return
+line to the call. With reduced motion (`prefers-reduced-motion`) nothing
+moves: a box fades in where it lands, values appear in place, and the view
+jumps to the current step instead of gliding; the short fades and highlights
+stay.
+
 A call box lists its variables in a row below its code; the box of the current
 call, when it's taller than the view, keeps that row at the view's bottom edge
 while the box is on screen. The file's (global) variables are in a footer below
