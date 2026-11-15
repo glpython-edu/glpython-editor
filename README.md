@@ -126,12 +126,18 @@ stay.
 
 A call box lists its variables in a row below its code; the box of the current
 call, when it's taller than the view, keeps that row at the view's bottom edge
-while the box is on screen. The file's (global) variables are in a footer below
+while the box is on screen. Without `compact` (the IDE), a step that opens a call
+box scrolls it into view whole, down to its variable row, together with the
+boxes around it as far as they fit (a box opens inside its caller's and pushes
+the caller's row down); a box taller than the view only follows the current
+line. The file's (global) variables are in a footer below
 the code that doesn't scroll with it, at every width, so the code has the full
 width: name and value (`auswerten Funktion`, `x 3`) in a row that wraps, at
 most about three lines high (then it scrolls). A program without global
 variables has no footer; one with them has it from the start, as tall as at
-the last step. Hovering over an entry, tapping it (touch) or focusing it opens
+the last step. A visualized REPL input (and a failing doctest example) starts
+with the session's globals in the footer: what the last Run defined and the
+earlier inputs assigned; what the input assigns appears during its steps. Hovering over an entry, tapping it (touch) or focusing it opens
 a box over the code, upwards from the pointer and inside the visualizer (at
 most its width and ⅔ of its height, scrolling inside): a function's (or
 class's) whole definition, highlighted, also while it's open as a call box; any

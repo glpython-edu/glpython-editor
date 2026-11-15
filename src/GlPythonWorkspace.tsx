@@ -5,7 +5,7 @@ import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
 import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -2117,13 +2117,15 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const treePeekAccess: TreePeekAccess = { handlers: treePeek.handlers, openKey: treePeek.peek?.key ?? null, id: 'glp-tree-peek', hintId: 'glp-tree-peek-hint' }
   const closeTreePeek = treePeek.close
   useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A traced REPL input starts with the session's globals in the footer (P61).
+  const globalsTrace = useMemo(() => withSessionGlobals(visualTrace), [visualTrace])
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
-    values: fullValuesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.values),
-    trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
+    values: fullValuesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.values),
+    trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
     showTrees: workspaceCapabilities.listTree && showListTrees,
     open: (value, name, tree) => setFullValueView({ value, name, tree: workspaceCapabilities.listTree && showListTrees ? tree : undefined }),
     t,
-  }), [visualTrace, currentTraceStep, t, workspaceCapabilities.listTree, showListTrees])
+  }), [visualTrace, globalsTrace, currentTraceStep, t, workspaceCapabilities.listTree, showListTrees])
   // The step that will run next if the learner clicks "next" - previewed
   // via highlighting its AST span, including before any step has run yet
   // (clampedStepIndex === -1), so the very first statement is shown too.
@@ -2272,6 +2274,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // stays where the row is in the frame and it flies on to where the box is
   // now (P57). In an animation frame, not on 'scroll': some browsers fire
   // that a frame after the view has moved.
+  // The call boxes of the step shown last, for the scroll effect's «a new box» (P61).
+  const shownBoxesRef = useRef<{ steps: TraceStep[]; ids: Set<string> } | null>(null)
   const flyInRef = useRef<{ box: HTMLElement; dx: number; dy: number; scrollLeft: number; scrollTop: number; until: number; frame: number } | null>(null)
   const reducedMotion = useReducedMotion()
   const reducedMotionRef = useRef(reducedMotion)
@@ -2386,11 +2390,11 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // The module's variables, in the footer below the code (GlobalsFooter):
   // there from the start if the program has any, else no footer at all. A
   // name the next step declares is there already, without a value yet.
-  const showGlobalsFooter = useMemo(() => traceHasGlobals(visualTrace?.trace ?? []), [visualTrace])
-  const finalGlobalEntries = useMemo(() => Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], Infinity, 0)), [visualTrace])
-  const globalEntries: Array<[string, string | null]> = Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, 0))
+  const showGlobalsFooter = useMemo(() => traceHasGlobals(globalsTrace), [globalsTrace])
+  const finalGlobalEntries = useMemo(() => Object.entries(buildLocalsUpTo(globalsTrace, Infinity, 0)), [globalsTrace])
+  const globalEntries: Array<[string, string | null]> = Object.entries(buildLocalsUpTo(globalsTrace, currentTraceStep?.step ?? -1, 0))
   if (nextStepDeclareTarget?.frameId === 0 && !globalEntries.some(([name]) => name === nextStepDeclareTarget.varName)) globalEntries.push([nextStepDeclareTarget.varName, null])
-  const globalDefinitionOf = (name: string) => globalDefinitionSource(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, name, astIndexByFile, visualSources, visualRootPath ?? project.mainFile)
+  const globalDefinitionOf = (name: string) => globalDefinitionSource(globalsTrace, currentTraceStep?.step ?? -1, name, astIndexByFile, visualSources, visualRootPath ?? project.mainFile)
   // Why a call stays a box in the substitution and tree modes, at its box.
   const boxHintFor = (reason: BoxReason | null, funcName: string): ReactNode => {
     const text = reason ? t.visualizerBoxReason?.(reason) : undefined
@@ -2751,6 +2755,15 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // fit (e.g. it already holds the next call's box) the innermost box wins.
   // Only steps scroll, so the learner can still scroll around in between.
   //
+  // In the IDE (not compact: there every box is shown at its full height),
+  // a step that opens a new call box - one whose frame wasn't a box at the
+  // step shown before - scrolls it into view whole, down to its variable
+  // row, if it fits into the view with the current line still in it (P61).
+  // A new box opens inside its caller's box and pushes the caller's
+  // variable row down, so of the boxes around it the outermost that fits is
+  // shown whole instead, the new one inside it. A box taller than the view
+  // is left to the rules above. It is the same single scroll per step.
+  //
   // Both directions scroll only this view, never the page around it
   // (scrollIntoView would also scroll e.g. a LiaScript course page, even
   // across origins, moving the step buttons out from under the mouse).
@@ -2758,41 +2771,74 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     if (!isVisualizing) return
     const container = visualizerScrollRef.current
     const canvas = visualizerCanvasRef.current
-    const root = canvas?.querySelector<HTMLElement>('.frame-box--root')
-    if (!container || !canvas || !root) return
+    const committedRoot = canvas?.querySelector<HTMLElement>('.frame-box--root')
+    if (!container || !canvas || !committedRoot) return
     const margin = 12
 
-    let nextTop = container.scrollTop
-    const line = root.querySelector<HTMLElement>('.visual-current-line')
-    // The current box's variable row may stick to the bottom of the view
-    // (.frame-box--current), covering what's behind it.
-    const stickyRow = root.querySelector<HTMLElement>('.frame-box--current > .frame-vars')
-    const visibleHeight = container.clientHeight - (stickyRow && !stickyRow.contains(line) ? stickyRow.offsetHeight : 0)
-    if (line) {
-      const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
-      const top = canvasTop + canvasOffset(line, canvas).top
-      const bottom = top + line.offsetHeight
-      if (top - margin < nextTop) nextTop = top - margin
-      else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
-    }
+    const boxIds = [...committedRoot.querySelectorAll<HTMLElement>('.frame-box:not(.frame-box--root)')].map((box) => box.dataset.frameId ?? '')
+    const shown = shownBoxesRef.current
+    shownBoxesRef.current = { steps: visualTraceSteps, ids: new Set(boxIds) }
+    // Open boxes form one chain: of several new ones (a jump), the innermost.
+    const openedId = !compact && shown?.steps === visualTraceSteps ? boxIds.filter((id) => !shown.ids.has(id)).at(-1) : undefined
 
-    const frameId = currentTraceStep?.frameId ?? 0
-    const active = frameId === 0 ? root : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${frameId}"]`) ?? root
-    // Open boxes form one chain, so there's at most one box without boxes inside.
-    const innermost = [...root.querySelectorAll<HTMLElement>('.frame-box')].find((box) => !box.querySelector('.frame-box')) ?? null
-    const span = (box: HTMLElement) => {
-      const left = canvasOffset(box, canvas).left
-      return { left, right: left + box.offsetWidth }
+    const scrollToStep = () => {
+      const root = canvas.querySelector<HTMLElement>('.frame-box--root')
+      if (!root) return
+      let nextTop = container.scrollTop
+      const line = root.querySelector<HTMLElement>('.visual-current-line')
+      // The current box's variable row may stick to the bottom of the view
+      // (.frame-box--current), covering what's behind it.
+      const stickyRow = root.querySelector<HTMLElement>('.frame-box--current > .frame-vars')
+      const visibleHeight = container.clientHeight - (stickyRow && !stickyRow.contains(line) ? stickyRow.offsetHeight : 0)
+      if (line) {
+        const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        const top = canvasTop + canvasOffset(line, canvas).top
+        const bottom = top + line.offsetHeight
+        if (top - margin < nextTop) nextTop = top - margin
+        else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
+      }
+
+      const opened = openedId === undefined ? null : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${openedId}"]`)
+      // The new box and the boxes it opened in, outermost first.
+      const around: HTMLElement[] = []
+      for (let box: HTMLElement | null = opened; box && box !== root; box = box.parentElement?.closest<HTMLElement>('.frame-box') ?? null) around.unshift(box)
+      const shownBox = around.find((box) => box.offsetHeight + 2 * margin <= container.clientHeight)
+      if (shownBox) {
+        const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        const top = canvasTop + canvasOffset(shownBox, canvas).top
+        const bottom = top + shownBox.offsetHeight
+        if (bottom + margin > nextTop + container.clientHeight || top - margin < nextTop) {
+          const boxTop = Math.min(top - margin, Math.max(nextTop, bottom + margin - container.clientHeight))
+          const lineTop = line ? canvasTop + canvasOffset(line, canvas).top : null
+          const lineInView = lineTop === null || (lineTop - margin >= boxTop && lineTop + (line?.offsetHeight ?? 0) + margin <= boxTop + container.clientHeight)
+          if (lineInView) nextTop = boxTop
+        }
+      }
+
+      const frameId = currentTraceStep?.frameId ?? 0
+      const active = frameId === 0 ? root : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${frameId}"]`) ?? root
+      // Open boxes form one chain, so there's at most one box without boxes inside.
+      const innermost = [...root.querySelectorAll<HTMLElement>('.frame-box')].find((box) => !box.querySelector('.frame-box')) ?? null
+      const span = (box: HTMLElement) => {
+        const left = canvasOffset(box, canvas).left
+        return { left, right: left + box.offsetWidth }
+      }
+      const room = container.clientWidth - 2 * margin
+      let target = active !== root ? span(active) : innermost ? span(innermost) : { left: 0, right: 0 }
+      if (target.right - target.left > room && innermost) target = span(innermost)
+      if (target.right - target.left > room) target = { left: target.left, right: target.left + room }
+      let nextLeft = container.scrollLeft
+      if (target.left - margin < nextLeft) nextLeft = target.left - margin
+      else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
+      container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
     }
-    const room = container.clientWidth - 2 * margin
-    let target = active !== root ? span(active) : innermost ? span(innermost) : { left: 0, right: 0 }
-    if (target.right - target.left > room && innermost) target = span(innermost)
-    if (target.right - target.left > room) target = { left: target.left, right: target.left + room }
-    let nextLeft = container.scrollLeft
-    if (target.left - margin < nextLeft) nextLeft = target.left - margin
-    else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
-    container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
-  }, [isVisualizing, currentTraceStep])
+    // A new box's size may settle a render later (the tree mode measures its
+    // boxes as drawn, ExpressionTreeBox), so its step scrolls once in the
+    // next frame instead; every other step right away, as before.
+    if (openedId === undefined) { scrollToStep(); return }
+    const frame = requestAnimationFrame(scrollToStep)
+    return () => cancelAnimationFrame(frame)
+  }, [isVisualizing, currentTraceStep]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // While stepping through one visualization the canvas only grows: a call
   // box that opens makes it taller, but closing it again doesn't shrink it,
@@ -2850,7 +2896,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const steadyMeasureNode = steadyMeasureCurrent && steadyMeasure.pending.length > 0 && visualTrace ? <div className="visualizer-measure" ref={steadyMeasureRef} aria-hidden="true" inert style={{ width: steadyMeasure.width }}>{steadyMeasure.pending.slice(0, STEADY_HEIGHT_BATCH).map((index) => {
     const view = stepViewAt(visualTrace.trace, visualTraceSteps, index, astIndexByFile, substitutionMode, treeSteps?.episodes ?? null)
     const step = view.currentStep?.step ?? -1
-    const access: FullValueAccess = { values: fullValuesUpTo(visualTrace.trace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace.trace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
+    const access: FullValueAccess = { values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
     return <div key={index} className="visualizer-canvas" data-measure-step={index}><FullValueContext.Provider value={access}>{rootFrame(view)}</FullValueContext.Provider></div>
   })}</div> : null
 

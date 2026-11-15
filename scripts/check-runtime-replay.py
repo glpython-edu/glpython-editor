@@ -126,6 +126,12 @@ def session(files, inputs, label):
             want = (output.rstrip("\n"), expected.get("error"), expected.get("value"))
             if tuple(comparable(part) if isinstance(part, str) else part for part in got) != tuple(comparable(part) if isinstance(part, str) else part for part in want):
                 failures.append(f"{label}: tracing {source!r} gives {got}, the session gave {want}")
+            # The footer starts with the session's globals at that moment (P61):
+            # the file's names and what the earlier inputs assigned.
+            shown = set((trace.get("globals") or {}).get("locals", {}))
+            held = {name for name in states[index] if not name.startswith("_glpython") and not (name.startswith("__") and name.endswith("__"))}
+            if shown != held:
+                failures.append(f"{label}: tracing {source!r} starts with the globals {sorted(shown)}, the session held {sorted(held)}")
             # A function of the file is traced step by step, not called opaquely.
             if files and any(step["kind"] == "call-enter" for step in trace["trace"]) != ("(" in source and any(f"def {name}" in files["main.py"] for name in re.findall(r"(\w+)\(", source))):
                 failures.append(f"{label}: tracing {source!r} doesn't open the call boxes it should")
@@ -194,6 +200,48 @@ session({"main.py": "zahl = int('x')\n\ndef nie():\n    return 1\n"}, [
 session({}, ["x = 2", "x * 3", "y = [x]", "y"], "no Run")
 
 session({"main.py": "class Punkt:\n    pass\n\np = Punkt()\nprint(p)\n"}, ["p", "q = Punkt()", "q"], "default reprs")
+
+
+# P61: the Etappe 4 scaffold's shape - a library imported by name, the file's
+# functions, an earlier input's variable - and an input that assigns: its new
+# name appears in a module step, next to the session's.
+def traced_globals(files, inputs):
+    session(files, inputs, "P61 globals")
+    main = os.path.join(folder, "main.py")
+    sources = {os.path.join(folder, name)[1:]: source for name, source in files.items()}
+    runtime["_glpython_replay_begin"](json.dumps([os.path.join(folder, name) for name in files]))
+    try:
+        captured(runtime["_glpython_replay_file"], main)
+        for source in inputs[:-1]:
+            captured(runtime["_glpython_replay_input"], source)
+        trace, _ = captured(runtime["_glpython_run_visual_repl"], inputs[-1], json.dumps(sources), main[1:], "replay")
+    finally:
+        runtime["_glpython_replay_end"]()
+    return json.loads(trace)
+
+SCAFFOLD = {
+    "main.py": "from parser import parse, ist_liste\n\ndef auswerten(baum):\n    return baum\n\ndef berechnen(text):\n    return auswerten(parse(text))\n",
+    "parser.py": "def parse(text):\n    return int(text)\n\ndef ist_liste(wert):\n    return isinstance(wert, list)\n",
+}
+trace = traced_globals(SCAFFOLD, ['berechnen("2")'])
+if list((trace.get("globals") or {}).get("locals", {})) != ["parse", "ist_liste", "auswerten", "berechnen"]:
+    failures.append(f"P61: the scaffold's globals before the first step: {trace.get('globals')}")
+if any(step["frameId"] == 0 and step["locals"] for step in trace["trace"]):
+    failures.append("P61: an input that assigns nothing records no globals of its own")
+trace = traced_globals(SCAFFOLD, ["x = 3", 'berechnen("2")'])
+if "x" not in (trace.get("globals") or {}).get("locals", {}):
+    failures.append(f"P61: an earlier input's x is missing: {trace.get('globals')}")
+trace = traced_globals(SCAFFOLD, ['ergebnis = berechnen("2")'])
+if "ergebnis" in (trace.get("globals") or {}).get("locals", {}):
+    failures.append("P61: the input's own name is there before it ran")
+module_steps = [step["locals"] for step in trace["trace"] if step["frameId"] == 0 and step["locals"]]
+if not module_steps or list(module_steps[-1]) != ["parse", "ist_liste", "auswerten", "berechnen", "ergebnis"]:
+    failures.append(f"P61: the input's new name doesn't appear next to the session's: {module_steps}")
+# A long value: its full text comes with the globals, not with step 1.
+trace = traced_globals({"main.py": "zahlen = list(range(100))\n"}, ["1 + 2"])
+globals_ = trace.get("globals") or {}
+if not globals_.get("fullValues") or any(step.get("fullValues") for step in trace["trace"][:1]):
+    failures.append(f"P61: the full value of a long global: {globals_}, step 1 {trace['trace'][:1]}")
 
 
 # input() is flagged instead of asked, in the file, in an earlier input and in
