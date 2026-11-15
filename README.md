@@ -143,7 +143,7 @@ most its width and ⅔ of its height, scrolling inside): a function's (or
 class's) whole definition, highlighted, also while it's open as a call box; any
 other value in full. A function the file imports (from a library such as a
 course's `parser.py`, another file or the standard library) reads `parse
-Funktion · parser.py`, and its box shows what it does, not how: its signature,
+Funktion` like any function, and its box shows what it does, not how: its signature,
 its docstring without the doctest examples, and `aus parser.py` (`importedFrom`,
 optional); never its body. The box stays while the pointer moves into it; it closes
 when the pointer leaves both, on a tap elsewhere or with Escape. Arrows from a
@@ -581,8 +581,12 @@ page that exercises the eval, turtle, and visualization-only modes.
 It is hosted in two channels: the live embed from `main` at
 https://glpython-edu.github.io/glpython-editor/index.html, and the dev channel
 from `dev` at https://glpython-edu.github.io/glpython-editor/dev/index.html,
-built with `GLPYTHON_CHANNEL=dev` so that it shows a «dev» badge (unless
-`channelBadge=host`: the LiaScript macro shows it at the top of the block). A push to
+built with `GLPYTHON_CHANNEL=dev` so that it shows a «dev» badge: small, at
+the left end of the visualizer's bar, a row that exists anyway. It never takes
+a row of its own: where the bar has no room for it (it would wrap), it is left
+out, and before the visualizer opens (e.g. a block that only runs) there is no
+badge. With `channelBadge=host` (LiaScript macros before P63, which showed it
+themselves) the embed shows none. A push to
 `dev` never changes the live embed. The LiaScript macro loads the dev embed
 when its flag is set (see the macro's README).
 

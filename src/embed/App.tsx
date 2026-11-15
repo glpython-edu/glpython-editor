@@ -57,10 +57,23 @@ const isLarge = new URLSearchParams(window.location.search).get('size') === 'lar
 
 // The channel this embed was built for (vite.embed.config.ts): "dev" shows a
 // badge, so that a dev embed in a course is never taken for the live one.
+// It sits at the left end of the visualizer's bar, a row that exists anyway,
+// and takes no row of its own (P63): where it would make the bar wrap, it is
+// left out (fitChannelBadge). "&channelBadge=host": the host shows the badge
+// itself (LiaScript macros before P63), so the embed doesn't.
 declare const __GLPYTHON_CHANNEL__: 'live' | 'dev'
-// "&channelBadge=host": the host shows the badge itself (the LiaScript
-// macro, at the top of the block), so the embed doesn't.
 const showsChannelBadge = __GLPYTHON_CHANNEL__ === 'dev' && new URLSearchParams(window.location.search).get('channelBadge') !== 'host'
+
+// Shows the badge only if the bar is as tall with it as without it.
+function fitChannelBadge(root: HTMLElement) {
+  const badge = root.querySelector<HTMLElement>('.embed-channel-badge')
+  const bar = badge?.parentElement
+  if (!badge || !bar) return
+  badge.hidden = true
+  const without = bar.offsetHeight
+  badge.hidden = false
+  if (bar.offsetHeight > without) badge.hidden = true
+}
 
 // The parts that scroll when the iframe is smaller than the content: the
 // visualizer's code area and the console.
@@ -201,6 +214,8 @@ export function App() {
     let frame = 0
     const report = () => {
       frame = 0
+      // First the badge, so the height is the one learners get too.
+      if (showsChannelBadge) fitChannelBadge(root)
       const visualizing = root.querySelector('.glpython-workspace--visualizing') !== null
       const height = naturalHeight(root)
       const key = `${height}:${visualizing}`
@@ -265,6 +280,7 @@ export function App() {
         onGraphicsOpenChange={setIsGraphicsOpen}
         t={coreStrings[embedLocale]}
         compact
+        visualizerBarStart={showsChannelBadge ? <span className="embed-channel-badge" role="note" aria-label="dev channel">dev</span> : undefined}
         capabilities={{
           actions: false,
           editor: false,
@@ -282,7 +298,6 @@ export function App() {
           emptyOutput: mode !== 'visual',
         }}
       />
-      {showsChannelBadge && <div className="embed-channel-badge" role="note" aria-label="dev channel">dev</div>}
     </main>
   )
 }
