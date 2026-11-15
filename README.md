@@ -594,14 +594,15 @@ shows bigger code.
 
 **Its height is the parent's.** The embed fills its iframe and reports the
 height its content needs in `glpython:resize` (`height`; since v0.1.35 also
-`visualizing`, whether the visualizer is open) - its natural height, also
+`visualizing`, whether the visualizer is open; the macro doesn't use it since
+P60) - its natural height, also
 while the iframe is smaller or taller. A parent sets the iframe to that
 height, or less: the LiaScript macro gives it at most 80% of the course's
-visible height (with `large` while visualizing exactly that). In a smaller
+visible height, with or without `large`. In a smaller
 iframe the visualizer's code area scrolls, between the step bar and the
 global variables' footer, which stay in view, and follows the current step;
-without the visualizer the console scrolls. A taller iframe (`large`) is
-filled by the code area. Scrolling past the code's end goes on with the
+without the visualizer the console scrolls. A taller iframe (e.g. at the
+macro's minimum height) is filled by the code area. Scrolling past the code's end goes on with the
 page around it. The old `windowHeight` and `visualizerHeight` parameters are
 ignored.
 

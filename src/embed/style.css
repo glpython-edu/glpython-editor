@@ -96,8 +96,9 @@ body,
    course's visible height. A taller step scrolls the visualizer's code area,
    between the step bar and the footer, which stay in view; a taller output
    (Run, Tests) scrolls the console. While visualizing the code area also
-   fills an iframe taller than the content ("large"). The visualizer has a
-   small minimum, so a short program leaves no empty area. */
+   fills an iframe taller than the content (e.g. at a block's minimum
+   height). The visualizer has a small minimum, so a short program leaves no
+   empty area. */
 .embed-app {
   display: flex;
   flex-direction: column;
@@ -151,7 +152,7 @@ body,
 }
 
 /* "?size=large": bigger code (20px, line height 1.6) and the bar's text
-   16px (the macro makes the embed as tall as it may while visualizing). */
+   16px. It doesn't change the embed's height: that is the parent's. */
 .embed-app--large .visualizer-frame {
   font-size: 20px;
   line-height: 1.6;

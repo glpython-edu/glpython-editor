@@ -48,9 +48,9 @@ const featureList = (() => {
 })()
 const features = (feature: string) => featureList === null || featureList.has(feature)
 
-// "?size=large" (the macro's large option): bigger code. The embed's height
-// is the parent's to set (the macro: at most 80% of the course's visible
-// height, with "large" while visualizing that much); the embed fills its
+// "?size=large" (the macro's large option): bigger code, nothing else. The
+// embed's height is the parent's to set (the macro: the height reported, at
+// most 80% of the course's visible height); the embed fills its
 // iframe and scrolls the visualizer's code inside it (style.css), and
 // reports the height its content needs (naturalHeight).
 const isLarge = new URLSearchParams(window.location.search).get('size') === 'large'
@@ -191,8 +191,9 @@ export function App() {
   // (then the visualizer fills it): the root's height with each scrolling
   // part at its natural height instead of its current one. Reporting the
   // root's own height instead would keep a small iframe small for good.
-  // While visualizing it also says so, so that the parent can give "large"
-  // its height.
+  // It also says whether it visualizes (`visualizing`). The macro gave
+  // "large" the maximum height with it until P60 and doesn't use it since;
+  // it stays in the protocol, as older (cached) macros still read it.
   useEffect(() => {
     const root = rootRef.current
     if (!root || !configuredParentOrigin) return
