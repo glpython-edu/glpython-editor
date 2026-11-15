@@ -126,16 +126,26 @@ stay.
 
 A call box lists its variables in a row below its code; the box of the current
 call, when it's taller than the view, keeps that row at the view's bottom edge
-while the box is on screen. The file's (global) variables are in a footer below
+while the box is on screen. Without `compact` (the IDE), a step that opens a call
+box scrolls it into view whole, down to its variable row, together with the
+boxes around it as far as they fit (a box opens inside its caller's and pushes
+the caller's row down); a box taller than the view only follows the current
+line. The file's (global) variables are in a footer below
 the code that doesn't scroll with it, at every width, so the code has the full
 width: name and value (`auswerten Funktion`, `x 3`) in a row that wraps, at
 most about three lines high (then it scrolls). A program without global
 variables has no footer; one with them has it from the start, as tall as at
-the last step. Hovering over an entry, tapping it (touch) or focusing it opens
+the last step. A visualized REPL input (and a failing doctest example) starts
+with the session's globals in the footer: what the last Run defined and the
+earlier inputs assigned; what the input assigns appears during its steps. Hovering over an entry, tapping it (touch) or focusing it opens
 a box over the code, upwards from the pointer and inside the visualizer (at
 most its width and ⅔ of its height, scrolling inside): a function's (or
 class's) whole definition, highlighted, also while it's open as a call box; any
-other value in full. The box stays while the pointer moves into it; it closes
+other value in full. A function the file imports (from a library such as a
+course's `parser.py`, another file or the standard library) reads `parse
+Funktion` like any function, and its box shows what it does, not how: its signature,
+its docstring without the doctest examples, and `aus parser.py` (`importedFrom`,
+optional); never its body. The box stays while the pointer moves into it; it closes
 when the pointer leaves both, on a tap elsewhere or with Escape. Arrows from a
 call to a global function, and between a global variable and the code, end at
 its entry in the footer. Text: `visualizerGlobals` (the footer's label for
@@ -571,8 +581,12 @@ page that exercises the eval, turtle, and visualization-only modes.
 It is hosted in two channels: the live embed from `main` at
 https://glpython-edu.github.io/glpython-editor/index.html, and the dev channel
 from `dev` at https://glpython-edu.github.io/glpython-editor/dev/index.html,
-built with `GLPYTHON_CHANNEL=dev` so that it shows a «dev» badge (unless
-`channelBadge=host`: the LiaScript macro shows it at the top of the block). A push to
+built with `GLPYTHON_CHANNEL=dev` so that it shows a «dev» badge: small, at
+the left end of the visualizer's bar, a row that exists anyway. It never takes
+a row of its own: where the bar has no room for it (it would wrap), it is left
+out, and before the visualizer opens (e.g. a block that only runs) there is no
+badge. With `channelBadge=host` (LiaScript macros before P63, which showed it
+themselves) the embed shows none. A push to
 `dev` never changes the live embed. The LiaScript macro loads the dev embed
 when its flag is set (see the macro's README).
 
@@ -594,14 +608,15 @@ shows bigger code.
 
 **Its height is the parent's.** The embed fills its iframe and reports the
 height its content needs in `glpython:resize` (`height`; since v0.1.35 also
-`visualizing`, whether the visualizer is open) - its natural height, also
+`visualizing`, whether the visualizer is open; the macro doesn't use it since
+P60) - its natural height, also
 while the iframe is smaller or taller. A parent sets the iframe to that
 height, or less: the LiaScript macro gives it at most 80% of the course's
-visible height (with `large` while visualizing exactly that). In a smaller
+visible height, with or without `large`. In a smaller
 iframe the visualizer's code area scrolls, between the step bar and the
 global variables' footer, which stay in view, and follows the current step;
-without the visualizer the console scrolls. A taller iframe (`large`) is
-filled by the code area. Scrolling past the code's end goes on with the
+without the visualizer the console scrolls. A taller iframe (e.g. at the
+macro's minimum height) is filled by the code area. Scrolling past the code's end goes on with the
 page around it. The old `windowHeight` and `visualizerHeight` parameters are
 ignored.
 

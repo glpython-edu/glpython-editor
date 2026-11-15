@@ -5,7 +5,7 @@ import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
 import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -133,6 +133,8 @@ type CoreStrings = {
   testsExamplesError?: (message: string) => string
   valueKindClass?: string
   valueKindModule?: string
+  // An imported function's box in the footer (P62): where it comes from, e.g. «aus parser.py».
+  importedFrom?: (origin: string) => string
   closeFile: (path: string) => string
   output: string
   pyodideRuntime: string
@@ -280,6 +282,9 @@ type GlPythonWorkspaceProps = {
   // host's top bar; without it they sit above the editor. Only in the
   // stacked (not compact) layout.
   actionsContainer?: HTMLElement | null
+  // Something small at the left end of the visualizer's bar, a row that
+  // exists anyway (the embed: its dev channel's badge, P63).
+  visualizerBarStart?: ReactNode
   // Draws a Markdown file (".md") as a page: the host's renderer, which must
   // return sanitized HTML (the IDE: marked + DOMPurify). With it, a
   // Markdown tab has a «View / Text» switch; a read-only file opens as
@@ -538,8 +543,16 @@ function TextSegment({ segment, monaco }: { segment: Extract<LineSegment, { kind
 // (see fullValuesUpTo), and how to open one in FullValueDialog.
 // With listtree, also the trees of the panel's values (see valueTreesUpTo),
 // `showTrees` while its switch is on.
-type FullValueAccess = { values: Map<string, FullValue>; trees: Map<string, ValueTree>; showTrees: boolean; open: (value: FullValue, name: string | null, tree?: ValueTree) => void; t: CoreStrings }
+type FullValueAccess = { values: Map<string, FullValue>; trees: Map<string, ValueTree>; showTrees: boolean; open: (value: FullValue, name: string | null, tree?: ValueTree) => void; t: CoreStrings; functions?: Record<string, ImportedFunction> }
 const FullValueContext = createContext<FullValueAccess | null>(null)
+
+// A function the traced file didn't define (P62) reads
+// "function@<origin>#<name>" in the panels: shown as its kind like any
+// function, without where it comes from (P63; the footer's box says that).
+function valueKindText(labels: Record<string, string>, value: string): string | null {
+  if (Object.hasOwn(labels, value)) return labels[value]
+  return value.startsWith('function@') && value.includes('#') ? labels.function : null
+}
 
 // A loop variable's annotation reads "=[1, 2, …, 100]".
 function lookupFullValue(access: FullValueAccess | null, text: string): FullValue | null {
@@ -719,7 +732,7 @@ function useVisualizerPeek<P>(frameRef: { current: HTMLElement | null }, keepsOp
 function ValuePeekContent({ name, value, valueKindLabels }: { name: string; value: string | null; valueKindLabels: Record<string, string> }) {
   const access = useContext(FullValueContext)
   const full = value === null ? null : lookupFullValue(access, value)
-  const text = value === null ? '\u2026' : Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : full ? `${full.text}${full.cut ? '\u2026' : ''}` : value
+  const text = value === null ? '\u2026' : valueKindText(valueKindLabels, value) !== null ? valueKindText(valueKindLabels, value) : full ? `${full.text}${full.cut ? '\u2026' : ''}` : value
   const length = full && access ? fullValueLength(full, access.t) : null
   const tree = value !== null && access?.showTrees ? access.trees.get(value) : undefined
   return <>
@@ -727,6 +740,17 @@ function ValuePeekContent({ name, value, valueKindLabels }: { name: string; valu
     <pre className="visualizer-globals-value-text">{text}</pre>
     {full?.cut && access && <p className="full-value-cut">{access.t.visualizerFullValueCut ?? 'Only the beginning of this value is shown.'}</p>}
     {tree && <GlobalsPeekTree tree={tree} label={value ?? ''} />}
+  </>
+}
+
+// An imported function's box (P62): what it does, not how - its signature,
+// its docstring without the doctest examples, where it comes from; never its
+// body, which a course may hide on purpose (a library like parser.py).
+function ImportedFunctionPeek({ imported, monaco, t }: { imported: ImportedFunction; monaco: Monaco | null; t: CoreStrings | undefined }) {
+  return <>
+    <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, imported.signature ?? imported.name).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
+    {imported.doc && <p className="visualizer-globals-doc">{imported.doc}</p>}
+    <p className="visualizer-globals-origin">{t?.importedFrom?.(imported.origin) ?? `from ${imported.origin}`}</p>
   </>
 }
 
@@ -768,18 +792,21 @@ function GlobalsFooter({ entries, reserveEntries, valueKindLabels, definitionOf,
   let peekContent: ReactNode = null
   if (shownEntry) {
     const [name, value] = shownEntry
+    const imported = value !== null ? access?.functions?.[value] : undefined
     const definition = value !== null && (value === 'function' || value === 'class') ? definitionOf(name) : null
-    peekContent = definition
+    peekContent = imported
+      ? <ImportedFunctionPeek imported={imported} monaco={monaco} t={access?.t} />
+      : definition
       ? <pre className="visualizer-globals-definition">{tokenizePythonLines(monaco, definition.text).map((runs, index) => <Fragment key={index}>{index > 0 && '\n'}{runs.map((run, runIndex) => <span key={runIndex} className={run.className}>{run.text}</span>)}</Fragment>)}</pre>
       : <ValuePeekContent name={name} value={value} valueKindLabels={valueKindLabels} />
   }
   return (
     <>
       <div className="visualizer-globals" ref={footerRef}>
-        <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{Object.hasOwn(valueKindLabels, value) ? valueKindLabels[value] : value}</span></div>)}</div>
+        <div className="visualizer-globals-reserve" aria-hidden="true">{reserveEntries.map(([name, value]) => <div className="locals-row" key={name}><span className="locals-name">{name}</span><span className="locals-value">{valueKindText(valueKindLabels, value) ?? value}</span></div>)}</div>
         <div className="visualizer-globals-list" role="list" aria-label={access?.t.visualizerGlobals ?? 'Global variables'}>{entries.map(([name, value]) => <div className="locals-row" role="listitem" key={name} data-name={name} tabIndex={0} aria-describedby={shownEntry?.[0] === name ? peekId : undefined} {...handlers(name, null)}>
           <span className="locals-name">{name}</span>
-          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <span className="locals-value" key={value}>{value}</span>}
+          {value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : valueKindText(valueKindLabels, value) !== null ? <span className="locals-value locals-value-kind" key={value}>{valueKindText(valueKindLabels, value)}</span> : <span className="locals-value" key={value}>{value}</span>}
         </div>)}</div>
       </div>
       {peekContent && <div className="visualizer-globals-peek" id={peekId} {...boxProps}>{peekContent}</div>}
@@ -1298,7 +1325,7 @@ function Frame(props: FrameProps) {
       {!isModule && localEntries.length > 0 && <>
         <div className="frame-divider" />
         <div className="frame-vars">
-          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : Object.hasOwn(valueKindLabels, value) ? <span className="locals-value locals-value-kind" key={value}>{valueKindLabels[value]}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" peekKey={`${frameId}:${name}`} />}</div>)}
+          {localEntries.map(([name, value]) => <div className="locals-row" key={name} data-name={name}><span className="locals-name">{name}</span>{value === null ? <span className="locals-value locals-value-pending" key="pending">{'\u2026'}</span> : valueKindText(valueKindLabels, value) !== null ? <span className="locals-value locals-value-kind" key={value}>{valueKindText(valueKindLabels, value)}</span> : <LocalsValue key={value} name={name} value={value} className="locals-value" peekKey={`${frameId}:${name}`} />}</div>)}
         </div>
       </>}
     </div>
@@ -1586,6 +1613,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     visualizerMode: visualizerModePreset,
     onBusyChange,
     actionsContainer = null,
+    visualizerBarStart,
     renderMarkdown,
   } = props
   const workspaceCapabilities = { ...defaultWorkspaceCapabilities, ...capabilities }
@@ -2117,13 +2145,16 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const treePeekAccess: TreePeekAccess = { handlers: treePeek.handlers, openKey: treePeek.peek?.key ?? null, id: 'glp-tree-peek', hintId: 'glp-tree-peek-hint' }
   const closeTreePeek = treePeek.close
   useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A traced REPL input starts with the session's globals in the footer (P61).
+  const globalsTrace = useMemo(() => withSessionGlobals(visualTrace), [visualTrace])
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
-    values: fullValuesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.values),
-    trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
+    functions: visualTrace?.functions,
+    values: fullValuesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.values),
+    trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, currentTraceStep?.step ?? -1, visualTrace?.trees) : new Map(),
     showTrees: workspaceCapabilities.listTree && showListTrees,
     open: (value, name, tree) => setFullValueView({ value, name, tree: workspaceCapabilities.listTree && showListTrees ? tree : undefined }),
     t,
-  }), [visualTrace, currentTraceStep, t, workspaceCapabilities.listTree, showListTrees])
+  }), [visualTrace, globalsTrace, currentTraceStep, t, workspaceCapabilities.listTree, showListTrees])
   // The step that will run next if the learner clicks "next" - previewed
   // via highlighting its AST span, including before any step has run yet
   // (clampedStepIndex === -1), so the very first statement is shown too.
@@ -2272,6 +2303,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // stays where the row is in the frame and it flies on to where the box is
   // now (P57). In an animation frame, not on 'scroll': some browsers fire
   // that a frame after the view has moved.
+  // The call boxes of the step shown last, for the scroll effect's «a new box» (P61).
+  const shownBoxesRef = useRef<{ steps: TraceStep[]; ids: Set<string> } | null>(null)
   const flyInRef = useRef<{ box: HTMLElement; dx: number; dy: number; scrollLeft: number; scrollTop: number; until: number; frame: number } | null>(null)
   const reducedMotion = useReducedMotion()
   const reducedMotionRef = useRef(reducedMotion)
@@ -2386,11 +2419,11 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // The module's variables, in the footer below the code (GlobalsFooter):
   // there from the start if the program has any, else no footer at all. A
   // name the next step declares is there already, without a value yet.
-  const showGlobalsFooter = useMemo(() => traceHasGlobals(visualTrace?.trace ?? []), [visualTrace])
-  const finalGlobalEntries = useMemo(() => Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], Infinity, 0)), [visualTrace])
-  const globalEntries: Array<[string, string | null]> = Object.entries(buildLocalsUpTo(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, 0))
+  const showGlobalsFooter = useMemo(() => traceHasGlobals(globalsTrace), [globalsTrace])
+  const finalGlobalEntries = useMemo(() => Object.entries(buildLocalsUpTo(globalsTrace, Infinity, 0)), [globalsTrace])
+  const globalEntries: Array<[string, string | null]> = Object.entries(buildLocalsUpTo(globalsTrace, currentTraceStep?.step ?? -1, 0))
   if (nextStepDeclareTarget?.frameId === 0 && !globalEntries.some(([name]) => name === nextStepDeclareTarget.varName)) globalEntries.push([nextStepDeclareTarget.varName, null])
-  const globalDefinitionOf = (name: string) => globalDefinitionSource(visualTrace?.trace ?? [], currentTraceStep?.step ?? -1, name, astIndexByFile, visualSources, visualRootPath ?? project.mainFile)
+  const globalDefinitionOf = (name: string) => globalDefinitionSource(globalsTrace, currentTraceStep?.step ?? -1, name, astIndexByFile, visualSources, visualRootPath ?? project.mainFile)
   // Why a call stays a box in the substitution and tree modes, at its box.
   const boxHintFor = (reason: BoxReason | null, funcName: string): ReactNode => {
     const text = reason ? t.visualizerBoxReason?.(reason) : undefined
@@ -2751,6 +2784,15 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // fit (e.g. it already holds the next call's box) the innermost box wins.
   // Only steps scroll, so the learner can still scroll around in between.
   //
+  // In the IDE (not compact: there every box is shown at its full height),
+  // a step that opens a new call box - one whose frame wasn't a box at the
+  // step shown before - scrolls it into view whole, down to its variable
+  // row, if it fits into the view with the current line still in it (P61).
+  // A new box opens inside its caller's box and pushes the caller's
+  // variable row down, so of the boxes around it the outermost that fits is
+  // shown whole instead, the new one inside it. A box taller than the view
+  // is left to the rules above. It is the same single scroll per step.
+  //
   // Both directions scroll only this view, never the page around it
   // (scrollIntoView would also scroll e.g. a LiaScript course page, even
   // across origins, moving the step buttons out from under the mouse).
@@ -2758,41 +2800,74 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     if (!isVisualizing) return
     const container = visualizerScrollRef.current
     const canvas = visualizerCanvasRef.current
-    const root = canvas?.querySelector<HTMLElement>('.frame-box--root')
-    if (!container || !canvas || !root) return
+    const committedRoot = canvas?.querySelector<HTMLElement>('.frame-box--root')
+    if (!container || !canvas || !committedRoot) return
     const margin = 12
 
-    let nextTop = container.scrollTop
-    const line = root.querySelector<HTMLElement>('.visual-current-line')
-    // The current box's variable row may stick to the bottom of the view
-    // (.frame-box--current), covering what's behind it.
-    const stickyRow = root.querySelector<HTMLElement>('.frame-box--current > .frame-vars')
-    const visibleHeight = container.clientHeight - (stickyRow && !stickyRow.contains(line) ? stickyRow.offsetHeight : 0)
-    if (line) {
-      const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
-      const top = canvasTop + canvasOffset(line, canvas).top
-      const bottom = top + line.offsetHeight
-      if (top - margin < nextTop) nextTop = top - margin
-      else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
-    }
+    const boxIds = [...committedRoot.querySelectorAll<HTMLElement>('.frame-box:not(.frame-box--root)')].map((box) => box.dataset.frameId ?? '')
+    const shown = shownBoxesRef.current
+    shownBoxesRef.current = { steps: visualTraceSteps, ids: new Set(boxIds) }
+    // Open boxes form one chain: of several new ones (a jump), the innermost.
+    const openedId = !compact && shown?.steps === visualTraceSteps ? boxIds.filter((id) => !shown.ids.has(id)).at(-1) : undefined
 
-    const frameId = currentTraceStep?.frameId ?? 0
-    const active = frameId === 0 ? root : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${frameId}"]`) ?? root
-    // Open boxes form one chain, so there's at most one box without boxes inside.
-    const innermost = [...root.querySelectorAll<HTMLElement>('.frame-box')].find((box) => !box.querySelector('.frame-box')) ?? null
-    const span = (box: HTMLElement) => {
-      const left = canvasOffset(box, canvas).left
-      return { left, right: left + box.offsetWidth }
+    const scrollToStep = () => {
+      const root = canvas.querySelector<HTMLElement>('.frame-box--root')
+      if (!root) return
+      let nextTop = container.scrollTop
+      const line = root.querySelector<HTMLElement>('.visual-current-line')
+      // The current box's variable row may stick to the bottom of the view
+      // (.frame-box--current), covering what's behind it.
+      const stickyRow = root.querySelector<HTMLElement>('.frame-box--current > .frame-vars')
+      const visibleHeight = container.clientHeight - (stickyRow && !stickyRow.contains(line) ? stickyRow.offsetHeight : 0)
+      if (line) {
+        const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        const top = canvasTop + canvasOffset(line, canvas).top
+        const bottom = top + line.offsetHeight
+        if (top - margin < nextTop) nextTop = top - margin
+        else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
+      }
+
+      const opened = openedId === undefined ? null : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${openedId}"]`)
+      // The new box and the boxes it opened in, outermost first.
+      const around: HTMLElement[] = []
+      for (let box: HTMLElement | null = opened; box && box !== root; box = box.parentElement?.closest<HTMLElement>('.frame-box') ?? null) around.unshift(box)
+      const shownBox = around.find((box) => box.offsetHeight + 2 * margin <= container.clientHeight)
+      if (shownBox) {
+        const canvasTop = canvas.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        const top = canvasTop + canvasOffset(shownBox, canvas).top
+        const bottom = top + shownBox.offsetHeight
+        if (bottom + margin > nextTop + container.clientHeight || top - margin < nextTop) {
+          const boxTop = Math.min(top - margin, Math.max(nextTop, bottom + margin - container.clientHeight))
+          const lineTop = line ? canvasTop + canvasOffset(line, canvas).top : null
+          const lineInView = lineTop === null || (lineTop - margin >= boxTop && lineTop + (line?.offsetHeight ?? 0) + margin <= boxTop + container.clientHeight)
+          if (lineInView) nextTop = boxTop
+        }
+      }
+
+      const frameId = currentTraceStep?.frameId ?? 0
+      const active = frameId === 0 ? root : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${frameId}"]`) ?? root
+      // Open boxes form one chain, so there's at most one box without boxes inside.
+      const innermost = [...root.querySelectorAll<HTMLElement>('.frame-box')].find((box) => !box.querySelector('.frame-box')) ?? null
+      const span = (box: HTMLElement) => {
+        const left = canvasOffset(box, canvas).left
+        return { left, right: left + box.offsetWidth }
+      }
+      const room = container.clientWidth - 2 * margin
+      let target = active !== root ? span(active) : innermost ? span(innermost) : { left: 0, right: 0 }
+      if (target.right - target.left > room && innermost) target = span(innermost)
+      if (target.right - target.left > room) target = { left: target.left, right: target.left + room }
+      let nextLeft = container.scrollLeft
+      if (target.left - margin < nextLeft) nextLeft = target.left - margin
+      else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
+      container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
     }
-    const room = container.clientWidth - 2 * margin
-    let target = active !== root ? span(active) : innermost ? span(innermost) : { left: 0, right: 0 }
-    if (target.right - target.left > room && innermost) target = span(innermost)
-    if (target.right - target.left > room) target = { left: target.left, right: target.left + room }
-    let nextLeft = container.scrollLeft
-    if (target.left - margin < nextLeft) nextLeft = target.left - margin
-    else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
-    container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
-  }, [isVisualizing, currentTraceStep])
+    // A new box's size may settle a render later (the tree mode measures its
+    // boxes as drawn, ExpressionTreeBox), so its step scrolls once in the
+    // next frame instead; every other step right away, as before.
+    if (openedId === undefined) { scrollToStep(); return }
+    const frame = requestAnimationFrame(scrollToStep)
+    return () => cancelAnimationFrame(frame)
+  }, [isVisualizing, currentTraceStep]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // While stepping through one visualization the canvas only grows: a call
   // box that opens makes it taller, but closing it again doesn't shrink it,
@@ -2850,7 +2925,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const steadyMeasureNode = steadyMeasureCurrent && steadyMeasure.pending.length > 0 && visualTrace ? <div className="visualizer-measure" ref={steadyMeasureRef} aria-hidden="true" inert style={{ width: steadyMeasure.width }}>{steadyMeasure.pending.slice(0, STEADY_HEIGHT_BATCH).map((index) => {
     const view = stepViewAt(visualTrace.trace, visualTraceSteps, index, astIndexByFile, substitutionMode, treeSteps?.episodes ?? null)
     const step = view.currentStep?.step ?? -1
-    const access: FullValueAccess = { values: fullValuesUpTo(visualTrace.trace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(visualTrace.trace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
+    const access: FullValueAccess = { functions: visualTrace.functions, values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
     return <div key={index} className="visualizer-canvas" data-measure-step={index}><FullValueContext.Provider value={access}>{rootFrame(view)}</FullValueContext.Provider></div>
   })}</div> : null
 
@@ -2866,7 +2941,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const testsFromActions = () => { if (isVisualizing) exitVisualizer(); runTests() }
   const actionsNode = workspaceCapabilities.actions ? <div className="editor-actions">{(workspaceCapabilities.run || showStopButton) && <button className="run-button" onClick={showStopButton ? stopPython : isRunning ? undefined : runFromActions} aria-disabled={isRunning && !showStopButton}><span className="run-button-labels"><span aria-hidden={showStopButton}><Play size={15} fill="currentColor" /> {t.runProject}</span><span aria-hidden={!showStopButton}><Square size={13} fill="currentColor" /> {t.stop ?? 'Stop'}</span></span></button>}{workspaceCapabilities.tests && <button className="secondary-button" onClick={testsFromActions} disabled={isTesting || inputRequest !== null}><FlaskConical size={15} /> {t.runTests ?? 'Tests'}</button>}{workspaceCapabilities.visualization && <button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading || inputRequest !== null}><Workflow size={15} /> {t.visualize}</button>}{workspaceCapabilities.resetOutput && <button className="secondary-button" onClick={resetPython}><RotateCcw size={15} /> {t.resetOutput}</button>}</div> : null
   const breadcrumbsNode = <div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong></div>
-  const visualizerBarNode = <div className="visualizer-bar">{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
+  const visualizerBarNode = <div className="visualizer-bar">{visualizerBarStart}{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}{isMarkdown && !isVisualizing && <div className="markdown-switch" role="group" aria-label={t.markdownViewLabel ?? 'Show the file'}><button type="button" aria-pressed={markdownView === 'page'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'page' }))}>{t.markdownPage ?? 'View'}</button><button type="button" aria-pressed={markdownView === 'text'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'text' }))}>{t.markdownText ?? 'Text'}</button></div>}</div>
   const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><TreePeekContext.Provider value={treePeekAccess}>{rootFrame(currentStepView)}</TreePeekContext.Provider></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{fullValueAccess.showTrees && <span id="glp-tree-peek-hint" hidden>{t.showTree ?? 'Show tree'}</span>}{treePeek.peek && fullValueAccess.trees.get(treePeek.peek.payload.value) && <div className="visualizer-globals-peek visualizer-tree-peek" id="glp-tree-peek" {...treePeek.boxProps}><GlobalsPeekTree tree={fullValueAccess.trees.get(treePeek.peek.payload.value)!} label={treePeek.peek.payload.value} /></div>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>

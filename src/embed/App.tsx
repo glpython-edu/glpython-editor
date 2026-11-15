@@ -48,19 +48,32 @@ const featureList = (() => {
 })()
 const features = (feature: string) => featureList === null || featureList.has(feature)
 
-// "?size=large" (the macro's large option): bigger code. The embed's height
-// is the parent's to set (the macro: at most 80% of the course's visible
-// height, with "large" while visualizing that much); the embed fills its
+// "?size=large" (the macro's large option): bigger code, nothing else. The
+// embed's height is the parent's to set (the macro: the height reported, at
+// most 80% of the course's visible height); the embed fills its
 // iframe and scrolls the visualizer's code inside it (style.css), and
 // reports the height its content needs (naturalHeight).
 const isLarge = new URLSearchParams(window.location.search).get('size') === 'large'
 
 // The channel this embed was built for (vite.embed.config.ts): "dev" shows a
 // badge, so that a dev embed in a course is never taken for the live one.
+// It sits at the left end of the visualizer's bar, a row that exists anyway,
+// and takes no row of its own (P63): where it would make the bar wrap, it is
+// left out (fitChannelBadge). "&channelBadge=host": the host shows the badge
+// itself (LiaScript macros before P63), so the embed doesn't.
 declare const __GLPYTHON_CHANNEL__: 'live' | 'dev'
-// "&channelBadge=host": the host shows the badge itself (the LiaScript
-// macro, at the top of the block), so the embed doesn't.
 const showsChannelBadge = __GLPYTHON_CHANNEL__ === 'dev' && new URLSearchParams(window.location.search).get('channelBadge') !== 'host'
+
+// Shows the badge only if the bar is as tall with it as without it.
+function fitChannelBadge(root: HTMLElement) {
+  const badge = root.querySelector<HTMLElement>('.embed-channel-badge')
+  const bar = badge?.parentElement
+  if (!badge || !bar) return
+  badge.hidden = true
+  const without = bar.offsetHeight
+  badge.hidden = false
+  if (bar.offsetHeight > without) badge.hidden = true
+}
 
 // The parts that scroll when the iframe is smaller than the content: the
 // visualizer's code area and the console.
@@ -191,8 +204,9 @@ export function App() {
   // (then the visualizer fills it): the root's height with each scrolling
   // part at its natural height instead of its current one. Reporting the
   // root's own height instead would keep a small iframe small for good.
-  // While visualizing it also says so, so that the parent can give "large"
-  // its height.
+  // It also says whether it visualizes (`visualizing`). The macro gave
+  // "large" the maximum height with it until P60 and doesn't use it since;
+  // it stays in the protocol, as older (cached) macros still read it.
   useEffect(() => {
     const root = rootRef.current
     if (!root || !configuredParentOrigin) return
@@ -200,6 +214,8 @@ export function App() {
     let frame = 0
     const report = () => {
       frame = 0
+      // First the badge, so the height is the one learners get too.
+      if (showsChannelBadge) fitChannelBadge(root)
       const visualizing = root.querySelector('.glpython-workspace--visualizing') !== null
       const height = naturalHeight(root)
       const key = `${height}:${visualizing}`
@@ -264,6 +280,7 @@ export function App() {
         onGraphicsOpenChange={setIsGraphicsOpen}
         t={coreStrings[embedLocale]}
         compact
+        visualizerBarStart={showsChannelBadge ? <span className="embed-channel-badge" role="note" aria-label="dev channel">dev</span> : undefined}
         capabilities={{
           actions: false,
           editor: false,
@@ -281,7 +298,6 @@ export function App() {
           emptyOutput: mode !== 'visual',
         }}
       />
-      {showsChannelBadge && <div className="embed-channel-badge" role="note" aria-label="dev channel">dev</div>}
     </main>
   )
 }

@@ -34,13 +34,22 @@
 //
 //   npm run build:embed && npm run test:console
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chromium } from 'playwright-core'
 
 const port = 4185
 const origin = `http://localhost:${port}`
 const server = spawn('npx', ['vite', 'preview', '--config', 'vite.embed.config.ts', '--port', String(port), '--strictPort'], { stdio: 'ignore' })
-const stopServer = () => server.kill()
+// The dev channel's embed (P63: its badge in the visualizer's bar), built
+// from the same source into dist-embed-dev/ (a second of building) and
+// served on a port of its own.
+const devPort = port + 1
+const devOrigin = `http://localhost:${devPort}`
+const devDir = new URL('../dist-embed-dev', import.meta.url).pathname
+const devBuild = spawnSync('npx', ['vite', 'build', '--config', 'vite.embed.config.ts', '--outDir', devDir], { env: { ...process.env, GLPYTHON_CHANNEL: 'dev' }, stdio: 'ignore' })
+if (devBuild.status !== 0) throw new Error('the dev embed did not build')
+const devServer = spawn('npx', ['vite', 'preview', '--config', 'vite.embed.config.ts', '--outDir', devDir, '--port', String(devPort), '--strictPort'], { stdio: 'ignore' })
+const stopServer = () => { server.kill(); devServer.kill() }
 process.on('exit', stopServer)
 
 // The parent page, served on the embed's own origin: it loads the embed and
@@ -102,7 +111,7 @@ const newPage = async (options) => {
 }
 try {
   for (let attempt = 0; ; attempt++) {
-    try { await fetch(`${origin}/index.html`); break } catch { if (attempt > 50) throw new Error('vite preview did not start') }
+    try { await fetch(`${origin}/index.html`); await fetch(`${devOrigin}/index.html`); break } catch { if (attempt > 50) throw new Error('vite preview did not start') }
     await new Promise((resolve) => setTimeout(resolve, 200))
   }
   // Pyodide's files first, before any case: then a case's 60 s are for
@@ -219,10 +228,10 @@ try {
   // COOP/COEP, so the embed is cross-origin isolated and can wait, as the IDE.
   const isolated = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   const language = 'def berechnen(text):\n    return eval(text)\n\ndef repl():\n    text = input("> ")\n    if text == "ende":\n        return\n    print(berechnen(text))\n    repl()\n'
-  const openEmbed = async (headers, query = '', width = 760) => {
+  const openEmbed = async (headers, query = '', width = 760, at = origin) => {
     const page = await newPage({ viewport: { width: 800, height: 950 } })
     await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness.replace('width:760px', `width:${width}px`), headers }))
-    await page.goto(`${origin}/check-console.html${query}`)
+    await page.goto(`${at}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
     return page
   }
@@ -1131,6 +1140,127 @@ try {
         failed += 1
         console.error(`Baum: the hint in «${name}»: ${error.message}`)
       }
+    }
+    await page.close()
+  }
+  // P62/P63: a function imported from a library or the standard library reads
+  // «Funktion» like the file's own, in the footer and in a call box's rows
+  // (no file name there); the footer's box shows what it does - the
+  // signature, the docstring without its examples, where it comes from - not
+  // its body; the file's own function shows its whole definition.
+  {
+    const label = 'imported functions in the footer: what they do, not how'
+    const main = 'from parser import ist_liste\nfrom math import sqrt\n\ndef auswerten(baum, test):\n    if test(baum):\n        return sqrt(baum[1])\n    return baum\n\nauswerten(4, ist_liste)\n'
+    const library = 'def ist_liste(x):\n    """Gibt True zurück, wenn x eine Liste ist.\n\n    >>> ist_liste([1])\n    True\n    >>> ist_liste(\n    ...     3)\n    False\n    """\n    return isinstance(x, list)\n'
+    const files = [{ path: 'main.py', source: main }, { path: 'parser.py', source: library }]
+    const page = await openEmbed({}, '?features=visualize&visualizer=box&cap=700')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      const boxRow = frame.locator('.frame-box .locals-row[data-name="test"]')
+      const filled = async () => await boxRow.count() > 0 && await boxRow.locator('.locals-value-pending').count() === 0
+      for (let index = 0; index < 20 && !await filled(); index += 1) await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+      assert.equal((await boxRow.innerText()).replace(/\s+/g, ' ').trim(), 'test Funktion', 'a call box\'s row: no file name')
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const entries = await frame.locator('.visualizer-globals-list .locals-row').evaluateAll((rows) => rows.map((row) => row.innerText.replace(/\s+/g, ' ').trim()))
+      assert.deepEqual(entries, ['ist_liste Funktion', 'sqrt Funktion', 'auswerten Funktion'], 'the entries: no file name')
+      const liste = (await (await peekOf(frame, 'ist_liste')).innerText()).replace(/\n+/g, '\n').trim()
+      assert.equal(liste, 'ist_liste(x)\nGibt True zurück, wenn x eine Liste ist.\naus parser.py', 'ist_liste: signature, docstring, origin')
+      const sqrt = (await (await peekOf(frame, 'sqrt')).innerText()).replace(/\n+/g, '\n').trim()
+      assert.equal(sqrt, 'sqrt(x, /)\nReturn the square root of x.\naus math', 'sqrt: from the standard library')
+      const own = await (await peekOf(frame, 'auswerten')).innerText()
+      assert.ok(own.startsWith('def auswerten(baum, test):') && own.includes('return baum'), `the file's own function: its definition (${own})`)
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
+  // P63: the dev channel's badge sits at the left end of the visualizer's
+  // bar and takes no row of its own: the same program is exactly as tall in
+  // the dev embed as in the live one, at every step; where the bar has no
+  // room for it (it would wrap), the badge is left out.
+  for (const width of [760, 330]) {
+    const label = `the dev badge in the visualizer's bar, ${width}px wide`
+    const source = 'def doppelt(x):\n    return 2 * x\n\nprint(doppelt(3) + doppelt(4))\n'
+    const heights = async (at) => {
+      const page = await openEmbed({}, '?features=visualize&visualizer=box', width, at)
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((source) => window.send('visualize', source), source)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await measured(frame)
+        const seen = []
+        const read = async () => {
+          await page.waitForTimeout(150)
+          seen.push(await page.evaluate(() => window.reported.height), await frame.locator('.visualizer-bar').evaluate((bar) => bar.offsetHeight))
+        }
+        await read()
+        await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+        await read()
+        await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+        await read()
+        const badge = await frame.locator('.visualizer-bar > .embed-channel-badge').evaluateAll((badges) => badges.map((badge) => ({ shown: !badge.hidden && badge.offsetWidth > 0, first: badge === badge.parentElement.firstElementChild, text: badge.innerText })))
+        return { seen, badge, badges: await frame.locator('.embed-channel-badge').count() }
+      } finally {
+        await page.close()
+      }
+    }
+    try {
+      const live = await heights(origin)
+      const dev = await heights(devOrigin)
+      assert.equal(live.badges, 0, 'no badge in the live embed')
+      assert.equal(dev.badges, 1, 'one badge in the dev embed, in the bar')
+      assert.equal(dev.badge[0].first, true, 'at the bar\'s left end')
+      if (width === 760) assert.deepEqual(dev.badge[0], { shown: true, first: true, text: 'DEV' }, 'shown where there is room')
+      assert.deepEqual(dev.seen, live.seen, 'the same heights (reported, bar) at steps 0, 1 and the last')
+      console.log(`${label}: ok (${dev.badge[0].shown ? 'shown' : 'left out'})`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+  }
+  // P61: a visualized REPL input starts with the session's globals in the
+  // footer - the file's functions and imported names, an earlier input's
+  // variable - and a name the input assigns appears during its steps.
+  {
+    const label = "a REPL input's footer: the session's globals"
+    const page = await openEmbed({}, '?features=run,repl,visualize')
+    const frame = page.frameLocator('#embed')
+    const names = () => frame.locator('.visualizer-globals-list .locals-row').evaluateAll((rows) => rows.map((row) => row.dataset.name))
+    const visualize = async (input) => {
+      await enterRepl(frame, input)
+      const entry = frame.locator('.repl-entry').last()
+      await entry.locator('.repl-entry-visualize:not([disabled])').waitFor({ timeout: 30000 })
+      await entry.locator('.repl-entry-visualize').click()
+      await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+    }
+    const leave = () => frame.getByRole('button', { name: 'Visualisierung beenden' }).click()
+    try {
+      await page.evaluate((source) => window.send('run', source), 'from math import sqrt\n\ndef auswerten(baum):\n    return baum\n\ndef berechnen(text):\n    return auswerten(int(text))\n')
+      await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+      await visualize('berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen'], 'before step 1: the file\'s names')
+      await frame.locator('.visualizer-controls button').nth(2).click()
+      assert.ok((await frame.locator('.visualizer-step-count').innerText()).startsWith('Schritt 1 von'), 'step 1 is the input\'s first step')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen'], 'step 1: still the file\'s names')
+      await leave()
+      await enterRepl(frame, 'x = 3')
+      await visualize('berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x'], 'an earlier input\'s x')
+      await leave()
+      await visualize('y = berechnen("2")')
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x'], 'before the input ran: no y')
+      await frame.locator('.visualizer-controls button').nth(3).click()
+      assert.deepEqual(await names(), ['sqrt', 'auswerten', 'berechnen', 'x', 'y'], 'at the end: y as well')
+      console.log(`${label}: ok`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
     }
     await page.close()
   }
