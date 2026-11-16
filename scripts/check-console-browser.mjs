@@ -38,6 +38,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { chromium } from 'playwright-core'
+import { readFile } from 'node:fs/promises'
 
 const port = 4185
 const origin = `http://localhost:${port}`
@@ -1379,6 +1380,119 @@ try {
       }
       await page.close()
     }
+  }
+  // P68: «Schritte als Bilder …» in «⋯ Optionen» - only with "stepimages"
+  // in features= (the IDE has it by default; a LiaScript block doesn't).
+  // The dialog proposes the current step and the five after it; the zip
+  // holds 00.png … one per step of the range, all of one size, and none
+  // shows the marking of what comes next, of what has just changed, or of
+  // the current and executed lines. For that, the two marking colours are
+  // set to colours nothing else uses (green, magenta): on screen they show,
+  // in the pictures they don't.
+  {
+    const label = 'steps as images: none in the embed without "stepimages"'
+    const source = 'def doppelt(x):\n    return 2 * x\n\ndef summe(a, b):\n    return doppelt(a) + b\n\nprint(summe(3, 4))\n'
+    for (const query of ['', '?features=visualize&visualizer=box']) {
+      const page = await openEmbed({}, query)
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((source) => window.send('visualize', source), source)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await frame.getByRole('button', { name: 'Optionen' }).click()
+        await frame.getByRole('menuitem', { name: '→-Kette kopieren' }).or(frame.getByRole('menuitemcheckbox').first()).first().waitFor()
+        assert.equal(await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).count(), 0, `no item (${query || 'no features='})`)
+        console.log(`${label} (${query || 'no features='}): ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`${label} (${query || 'no features='}): ${error.message}`)
+      }
+      await page.close()
+    }
+  }
+  {
+    const label = 'steps as images: a zip of the range, one size, no marks'
+    const source = 'def doppelt(x):\n    return 2 * x\n\ndef summe(a, b):\n    return doppelt(a) + b\n\nprint(summe(3, 4))\n'
+    const page = await openEmbed({}, '?features=visualize,stepimages&visualizer=box&cap=900')
+    const frame = page.frameLocator('#embed')
+    // Green and magenta, and their mixes with the backgrounds.
+    const marks = (pixels) => {
+      let green = 0
+      let magenta = 0
+      for (let index = 0; index < pixels.length; index += 4) {
+        const [r, g, b] = [pixels[index], pixels[index + 1], pixels[index + 2]]
+        if (g - Math.max(r, b) > 30) green += 1
+        if (r - g > 60 && b - g > 60) magenta += 1
+      }
+      return { green, magenta }
+    }
+    const marksIn = (pngs) => page.evaluate(async ({ pngs, marks }) => {
+      const count = new Function(`return ${marks}`)()
+      const result = []
+      for (const base64 of pngs) {
+        const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: 'image/png' }))
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+        const context = canvas.getContext('2d')
+        context.drawImage(bitmap, 0, 0)
+        result.push(count(context.getImageData(0, 0, bitmap.width, bitmap.height).data))
+      }
+      return result
+    }, { pngs, marks: marks.toString() })
+    try {
+      await page.evaluate((source) => window.send('visualize', source), source)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await frame.locator('html').evaluate((html) => { html.style.setProperty('--glp-current', '#00FF00'); html.style.setProperty('--glp-current-outline', '#FF00FF') })
+      // Animations off, so a screenshot shows the step as it stays.
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const animate = frame.getByRole('menuitemcheckbox', { name: 'Schritte animieren' })
+      if (await animate.getAttribute('aria-checked') === 'true') await animate.click()
+      await animate.press('Escape')
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const total = Number((await frame.locator('.visualizer-step-count').innerText()).match(/von (\d+)/)[1])
+      await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+      // On screen: the marks show.
+      const screens = []
+      for (let number = 1; number <= total; number += 1) {
+        await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+        screens.push((await frame.locator('.visualizer-view').screenshot()).toString('base64'))
+      }
+      const onScreen = (await marksIn(screens)).reduce((sum, { green, magenta }) => ({ green: sum.green + green, magenta: sum.magenta + magenta }), { green: 0, magenta: 0 })
+      assert.ok(onScreen.green > 1000 && onScreen.magenta > 100, `the marks show on screen: ${JSON.stringify(onScreen)}`)
+      // The dialog: the current step and the five after it; Escape cancels.
+      await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+      for (let number = 0; number < 2; number += 1) await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).click()
+      const dialog = frame.getByRole('dialog', { name: 'Schritte als Bilder' })
+      await dialog.waitFor()
+      assert.equal(await frame.locator('.visualizer-options-menu').count(), 0, 'the menu closed')
+      assert.deepEqual([await dialog.getByLabel('Von Schritt').inputValue(), await dialog.getByLabel('bis Schritt').inputValue()], ['2', String(Math.min(total, 7))], 'the current step and the five after it')
+      await dialog.getByLabel('Von Schritt').press('Escape')
+      await dialog.waitFor({ state: 'detached' })
+      // All steps, from «Vor der Ausführung» (00).
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).click()
+      await dialog.getByLabel('Von Schritt').fill('0')
+      await dialog.getByLabel('bis Schritt').fill(String(total))
+      const downloading = page.waitForEvent('download', { timeout: 120000 })
+      await dialog.getByRole('button', { name: 'Herunterladen' }).click()
+      const download = await downloading
+      await dialog.waitFor({ state: 'detached' })
+      const { unzipSync } = await import('fflate')
+      const files = unzipSync(new Uint8Array(await readFile(await download.path())))
+      const names = Object.keys(files)
+      assert.deepEqual(names, Array.from({ length: total + 1 }, (_, number) => `${String(number).padStart(2, '0')}.png`), 'the files')
+      const sizes = new Set(names.map((name) => { const view = new DataView(files[name].buffer, files[name].byteOffset); return `${view.getUint32(16)}x${view.getUint32(20)}` }))
+      assert.equal(sizes.size, 1, `one size: ${[...sizes]}`)
+      const width = await frame.locator('.visualizer-canvas').evaluate((canvas) => canvas.offsetWidth)
+      assert.ok(Number([...sizes][0].split('x')[0]) >= 2 * width, `at least the canvas's width, twice: ${[...sizes]} for ${width}px`)
+      const inPictures = await marksIn(names.map((name) => Buffer.from(files[name]).toString('base64')))
+      inPictures.forEach(({ green, magenta }, index) => assert.ok(green === 0 && magenta === 0, `${names[index]}: no marks (${green} green, ${magenta} magenta)`))
+      console.log(`${label}: ok (${names.length} pictures, ${[...sizes][0]})`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
   }
   // P62/P63: a function imported from a library or the standard library reads
   // «Funktion» like the file's own, in the footer and in a call box's rows
