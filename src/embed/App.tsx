@@ -99,8 +99,14 @@ function naturalHeight(root: HTMLElement): number {
     // The code area gets no smaller than its panel's minimum height allows.
     const panel = canvas ? element.closest<HTMLElement>('.editor-panel') : null
     if (panel) natural = Math.max(natural, current - (panel.getBoundingClientRect().height - (parseFloat(getComputedStyle(panel).minHeight) || 0)))
-    // Unchanged when it isn't clipped or stretched (no rounding).
-    if (Math.abs(natural - current) >= 1) height += natural - current
+    // The code area's difference always counts: it is measured exactly (the
+    // canvas), and the code area stretches with the iframe, so ignoring a
+    // part of a pixel there made the height depend on the iframe's - one
+    // pixel less than reported (the macro's border), it reported a pixel
+    // more, then a pixel less, without end (P67). The console's content is
+    // scrollHeight, in whole pixels: there a difference under 1px is
+    // rounding, and it stays unchanged.
+    if (canvas || Math.abs(natural - current) >= 1) height += natural - current
   }
   return Math.ceil(height)
 }
