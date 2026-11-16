@@ -58,9 +58,12 @@ process.on('exit', stopServer)
 // passes messages on, version 4. Its own query (e.g. "?features=…") goes on
 // to the embed. As the LiaScript macro does, it sets the iframe to the
 // height the embed reports, at most "?cap=" (default 900px; the macro: 80%
-// of the course's visible height) - then the embed scrolls inside.
+// of the course's visible height) - then the embed scrolls inside. Its
+// iframe is styled as the macro's (P67): a 1px top border inside the height
+// it sets (LiaScript's border-box), so the embed gets 1px less than it
+// reported.
 const harness = `<!doctype html><meta charset="utf-8"><body style="margin:0">
-<iframe id="embed" style="width:760px;height:170px;border:0"></iframe>
+<iframe id="embed" style="width:760px;height:170px;box-sizing:border-box;border:0;border-top:1px solid #ccc"></iframe>
 <script>
   const iframe = document.querySelector('#embed')
   let cap = Number(new URLSearchParams(location.search).get('cap')) || 900
@@ -70,7 +73,7 @@ const harness = `<!doctype html><meta charset="utf-8"><body style="margin:0">
   window.send = (type, source) => iframe.contentWindow.postMessage({ type: 'glpython:' + type, version: 4, source, mode: 'eval' }, location.origin)
   addEventListener('message', (event) => {
     if (event.data?.type === 'glpython:ready') window.ready = true
-    if (event.data?.type === 'glpython:resize') { window.reported = event.data; fit() }
+    if (event.data?.type === 'glpython:resize') { window.reported = event.data; window.resizes = (window.resizes ?? 0) + 1; fit() }
   })
   iframe.src = './index.html?parentOrigin=' + encodeURIComponent(location.origin) + '&mode=eval&lang=de' + location.search.replace('?', '&')
 </script>`
@@ -1323,6 +1326,58 @@ try {
         assert.ok(marked.some((state) => state.markerInTree), 'inside a tree, in a call node\'s place')
         assert.ok(marked.every((state) => /^… \d+ weitere Aufrufe von summe\(/.test(state.marker)), `its text: ${marked[0]?.marker}`)
       })
+    }
+  }
+  // P67: without input the embed's height stays put. In an iframe 1px
+  // smaller than it reported (the macro's border), the embed measured its
+  // code area 1px short, reported 1px more, got it, measured it 1px long,
+  // reported 1px less - some 30 times a second, at every step. At each
+  // step: after the step has settled, no resize message for 0.7s, and the
+  // same height. A file, a REPL input, a failing doctest example; 600 and
+  // 760px wide.
+  {
+    const zeige = 'def zeige_schnitt(noten):\n    """\n    Zeigt den Durchschnitt der Noten in der Liste noten an.\n\n    >>> zeige_schnitt([4, 5, 4.5])\n    4.5\n    >>> zeige_schnitt([4, 5, 4.5]) + 1\n    5.5\n    """\n    print(sum(noten) / len(noten))\n'
+    const notenschnitt = 'def notenschnitt(noten):\n    summe = sum(noten)\n    return summe / len(noten)\n\nnotenschnitt([4, 5, 4.5])\n'
+    const paths = {
+      'a file': async (page) => page.evaluate((source) => window.send('visualize', source), notenschnitt),
+      'a REPL input': async (page, frame) => {
+        await page.evaluate((source) => window.send('run', source), zeige)
+        await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+        await enterRepl(frame, 'zeige_schnitt([4, 5, 4.5]) + 1')
+        await frame.locator('.repl-entry .repl-entry-visualize:not([disabled])').last().click({ timeout: 30000 })
+      },
+      'a failing doctest example': async (page, frame) => {
+        await page.evaluate((source) => window.send('test', source), zeige)
+        await frame.getByRole('button', { name: 'Beispiel visualisieren' }).click({ timeout: 60000 })
+      },
+    }
+    for (const width of [600, 760]) for (const [name, start] of Object.entries(paths)) {
+      const label = `the embed's height stays put without input: ${name}, ${width}px`
+      const page = await openEmbed({}, '?features=run,repl,visualize,tests', width)
+      const frame = page.frameLocator('#embed')
+      try {
+        await start(page, frame)
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        await measured(frame)
+        const next = frame.getByRole('button', { name: 'Nächster Schritt' })
+        const seen = []
+        for (let step = 0; ; step++) {
+          await page.waitForTimeout(700)
+          const before = await page.evaluate(() => ({ resizes: window.resizes ?? 0, height: document.querySelector('#embed').getBoundingClientRect().height }))
+          await page.waitForTimeout(700)
+          const after = await page.evaluate(() => ({ resizes: window.resizes ?? 0, height: document.querySelector('#embed').getBoundingClientRect().height }))
+          seen.push({ step, messages: after.resizes - before.resizes, heights: [before.height, after.height] })
+          if (!(await next.isEnabled())) break
+          await next.click()
+        }
+        const moving = seen.filter((state) => state.messages > 0 || state.heights[0] !== state.heights[1])
+        assert.deepEqual(moving, [], `steps with resize messages or a new height without input (of ${seen.length})`)
+        console.log(`${label}: ok (${seen.length} steps)`)
+      } catch (error) {
+        failed += 1
+        console.error(`${label}: ${error.message.split('\n').slice(0, 12).join('\n')}`)
+      }
+      await page.close()
     }
   }
   // P62/P63: a function imported from a library or the standard library reads
