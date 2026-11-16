@@ -24,9 +24,11 @@
 // A steady height: while stepping through a visualization the embed keeps
 // one height (the visualizer the tallest step's, at most 80% of the window,
 // the console the last step's output), and the current line stays in view.
-// The mode «Baum» (with "tree"): «Ersetzung»'s steps plus open and close
-// for each tree, nodes that stay in place, one height, and the hint at a
-// call that stays a box (also in «Ersetzung»); without "tree" no button.
+// The trees (with "tree"; until P65 the mode «Baum», now «Ersetzung» with
+// the option «Ausdrücke als Bäume auswerten»): «Ersetzung»'s steps plus open
+// and close for each tree, nodes that stay in place, one height, and the
+// hint at a call that stays a box only without trees; without "tree" no
+// option. P65: the option in «Kasten» too, the presets, the stored choice.
 //
 // Drives the built embed (dist-embed/, from npm run build:embed) in Chrome
 // through its protocol, as the LiaScript macro does; Pyodide comes from its
@@ -234,6 +236,21 @@ try {
     await page.goto(`${at}/check-console.html${query}`)
     await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
     return page
+  }
+  // A view of the visualizer (P65): «Kasten» or «Ersetzung», with or
+  // without the option «Ausdrücke als Bäume auswerten» in «⋯ Optionen».
+  // «Baum» is «Ersetzung» with it (until P65 a mode of its own).
+  const treesOption = (frame) => frame.getByRole('menuitemcheckbox', { name: 'Ausdrücke als Bäume auswerten' })
+  const setTrees = async (frame, on) => {
+    await frame.getByRole('button', { name: 'Optionen' }).click()
+    const item = treesOption(frame)
+    if ((await item.getAttribute('aria-checked') === 'true') !== on) await item.click()
+    await item.press('Escape')
+  }
+  const showView = async (frame, name) => {
+    const [mode, trees] = name === 'Baum' ? ['Ersetzung', true] : name === 'Kasten mit Bäumen' ? ['Kasten', true] : [name, false]
+    await frame.locator('.visualizer-mode button', { hasText: mode }).click()
+    await setTrees(frame, trees)
   }
   // The transcript as it reads, without the entries' Visualize buttons: next
   // to a ">>>" line or on a line of their own, depending on the width.
@@ -974,9 +991,9 @@ try {
     }
     await page.close()
   }
-  // The visualizer's mode «Baum» (P34 A): only with "tree" in features= -
-  // without it no mode button, and a stored or preset «Baum» shows
-  // «Ersetzung». With it, each example takes «Ersetzung»'s steps plus one to
+  // The trees (P34 A; P65: the option «Ausdrücke als Bäume auswerten», «Baum»
+  // = «Ersetzung» with it): only with "tree" in features= - without it no
+  // option, and a stored or preset «tree» shows «Ersetzung». With it, each example takes «Ersetzung»'s steps plus one to
   // open and one to close each tree; a reduction moves no node of the tree;
   // each tree is described by its text, step by step as the chain; the embed
   // keeps one height; and a call that stays a box says why, in «Ersetzung»
@@ -989,7 +1006,10 @@ try {
       await measured(frame)
       assert.deepEqual(await frame.locator('.visualizer-mode button').allInnerTexts(), ['Kasten', 'Ersetzung'], 'the mode buttons')
       assert.equal(await frame.locator('.visualizer-mode button[aria-pressed="true"]').innerText(), 'Ersetzung', 'the mode shown')
-      console.log('Baum: without "tree" no mode button: ok')
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      assert.equal(await treesOption(frame).count(), 0, 'no trees option')
+      assert.equal(await frame.locator('.value-tree-scroll').count(), 0, 'no tree')
+      console.log('Baum: without "tree" no option, a preset «tree» shows «Ersetzung»: ok')
     } catch (error) {
       failed += 1
       console.error(`Baum: without "tree": ${error.message}`)
@@ -1001,7 +1021,7 @@ try {
     const page = await openEmbed({}, '?features=visualize,tree')
     const frame = page.frameLocator('#embed')
     const stepCount = () => frame.locator('.visualizer-step-count').innerText()
-    const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
+    const mode = (name) => showView(frame, name)
     // A mode switch stays at the same point of the program, maybe already at
     // the last step.
     const lastStep = async () => {
@@ -1116,7 +1136,7 @@ try {
       failed += 1
       console.error(`Baum: the box in the call node's place: ${error.message}`)
     }
-    // The hint at a call that stays a box: in «Ersetzung», not in «Baum»
+    // The hint at a call that stays a box: in «Ersetzung», not with trees
     // (the box in the call's place says it).
     for (const name of ['Ersetzung', 'Baum']) {
       try {
@@ -1134,7 +1154,7 @@ try {
           await frame.locator('.visualizer-view > .visualizer-canvas [data-tree-box-key] .frame-box').first().waitFor({ timeout: 5000 })
           assert.equal(await frame.locator('.visualizer-view > .visualizer-canvas .frame-hint').count(), 0, 'no hint in «Baum»')
         }
-        assert.equal(await frame.locator('.visualizer-mode button', { hasText: name }).getAttribute('aria-pressed'), 'true')
+        assert.equal(await frame.locator('.visualizer-mode button', { hasText: 'Ersetzung' }).getAttribute('aria-pressed'), 'true')
         console.log(`Baum: the hint at the box in «${name}»${name === 'Baum' ? ': none' : ''}: ok`)
       } catch (error) {
         failed += 1
@@ -1142,6 +1162,168 @@ try {
       }
     }
     await page.close()
+  }
+  // P65: the presets and the stored choice. A preset sets the mode and the
+  // option when the block loads (box and substitution: no trees; tree:
+  // «Ersetzung» with trees); without one, the stored mode and option - a
+  // «tree» stored before P65 reads as «Ersetzung» with trees. A click stores
+  // the choice; a block without "tree" ignores a stored option and keeps it.
+  {
+    // The visualizer's keys (others, e.g. the animations' switch, aren't
+    // this check's).
+    const stored = (page) => page.evaluate(() => Object.fromEntries(Object.entries(localStorage).filter(([key]) => key === 'glpython-visualizer-mode' || key === 'glpython-visualizer-trees')))
+    const reloadWith = async (page, storage) => {
+      await page.evaluate((storage) => {
+        localStorage.clear()
+        for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value)
+        window.ready = false
+        const iframe = document.querySelector('#embed')
+        iframe.contentWindow.location.reload()
+      }, storage)
+      await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
+    }
+    const viewOf = async (page) => {
+      const frame = page.frameLocator('#embed')
+      await page.evaluate((source) => window.send('visualize', source), 'x = 2 + 3 * 4\n')
+      await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+      await measured(frame)
+      await frame.locator('.visualizer-controls button').nth(2).click()
+      const mode = await frame.locator('.visualizer-mode button[aria-pressed="true"]').innerText()
+      const tree = await frame.locator('.visualizer-canvas .value-tree-scroll').count() > 0
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const option = await treesOption(frame).count() === 0 ? null : await treesOption(frame).getAttribute('aria-checked') === 'true'
+      await frame.getByRole('button', { name: 'Optionen' }).press('Escape')
+      return { mode, option, tree }
+    }
+    const cases = [
+      ['preset box, trees stored on', '&visualizer=box', { 'glpython-visualizer-trees': 'true' }, { mode: 'Kasten', option: false, tree: false }],
+      ['preset substitution, trees stored on', '&visualizer=substitution', { 'glpython-visualizer-trees': 'true' }, { mode: 'Ersetzung', option: false, tree: false }],
+      ['preset tree, «Kasten» stored', '&visualizer=tree', { 'glpython-visualizer-mode': 'box', 'glpython-visualizer-trees': 'false' }, { mode: 'Ersetzung', option: true, tree: true }],
+      ['no preset, nothing stored', '', {}, { mode: 'Ersetzung', option: false, tree: false }],
+      ['no preset, «tree» stored before P65', '', { 'glpython-visualizer-mode': 'tree' }, { mode: 'Ersetzung', option: true, tree: true }],
+      ['no preset, «Kasten» and trees stored', '', { 'glpython-visualizer-mode': 'box', 'glpython-visualizer-trees': 'true' }, { mode: 'Kasten', option: true, tree: true }],
+    ]
+    for (const [label, preset, storage, expected] of cases) {
+      const page = await openEmbed({}, `?features=visualize,tree${preset}`)
+      try {
+        await reloadWith(page, storage)
+        assert.deepEqual(await viewOf(page), expected)
+        // The preset or the stored values themselves stay as they were.
+        assert.deepEqual(await stored(page), storage, 'nothing written without a click')
+        console.log(`P65 presets: ${label}: ok`)
+      } catch (error) {
+        failed += 1
+        console.error(`P65 presets: ${label}: ${error.message}`)
+      }
+      await page.close()
+    }
+    {
+      const page = await openEmbed({}, '?features=visualize,tree')
+      const frame = page.frameLocator('#embed')
+      try {
+        await reloadWith(page, { 'glpython-visualizer-mode': 'tree' })
+        await viewOf(page)
+        // An old «tree»: a click on «Kasten» keeps the trees on.
+        await showView(frame, 'Kasten mit Bäumen')
+        assert.deepEqual(await stored(page), { 'glpython-visualizer-mode': 'box', 'glpython-visualizer-trees': 'true' }, 'a click stores the mode, the option kept')
+        await reloadWith(page, { 'glpython-visualizer-mode': 'box', 'glpython-visualizer-trees': 'true' })
+        assert.deepEqual(await viewOf(page), { mode: 'Kasten', option: true, tree: true }, 'remembered')
+        console.log('P65 presets: a click stores, a reload shows it: ok')
+      } catch (error) {
+        failed += 1
+        console.error(`P65 presets: a click stores: ${error.message}`)
+      }
+      await page.close()
+    }
+    {
+      const page = await openEmbed({}, '?features=visualize')
+      try {
+        await reloadWith(page, { 'glpython-visualizer-mode': 'tree', 'glpython-visualizer-trees': 'true' })
+        assert.deepEqual(await viewOf(page), { mode: 'Ersetzung', option: null, tree: false })
+        await showView(page.frameLocator('#embed'), 'Kasten').catch(() => {})
+        assert.equal(await page.evaluate(() => localStorage.getItem('glpython-visualizer-trees')), 'true', 'the stored option kept')
+        console.log('P65 presets: without "tree" the stored option is ignored and kept: ok')
+      } catch (error) {
+        failed += 1
+        console.error(`P65 presets: without "tree": ${error.message}`)
+      }
+      await page.close()
+    }
+  }
+  // P65: «Kasten» with trees - every call a box, one-line returns too, each
+  // box's expressions as trees; and the marker of a deep chain of calls
+  // inside a tree, in «Kasten» and in «Baum». Watched (P65): whether the
+  // embed keeps one height while stepping.
+  {
+    // Per step: the embed's height (the iframe's, at most the harness's cap)
+    // and the canvas's (the steady height: growing while stepping shows
+    // here), the boxes in trees, the trees, the marker.
+    const heights = async (frame) => {
+      const first = frame.locator('.visualizer-controls button').nth(0)
+      if (await first.isEnabled()) await first.click()
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      const seen = []
+      const state = () => frame.locator('.embed-app').evaluate((app) => ({
+        height: Math.round(app.getBoundingClientRect().height),
+        canvas: Math.round(app.querySelector('.visualizer-view > .visualizer-canvas').getBoundingClientRect().height),
+        boxesInTrees: app.querySelectorAll('.visualizer-view [data-tree-box-key] .frame-box').length,
+        trees: app.querySelectorAll('.visualizer-view .value-tree-scroll').length,
+        marker: app.querySelector('.visualizer-view .frame-collapsed-calls-label')?.textContent ?? null,
+        markerInTree: app.querySelector('.visualizer-view [data-tree-box-key] .frame-collapsed-calls') !== null,
+      }))
+      seen.push(await state())
+      while (await next.isEnabled()) {
+        await next.click()
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        seen.push(await state())
+      }
+      return seen
+    }
+    const run = async (label, source, view, check) => {
+      const page = await openEmbed({}, '?features=visualize,tree')
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((source) => window.send('visualize', source), source)
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        await showView(frame, view)
+        await measured(frame)
+        const seen = await heights(frame)
+        check(seen)
+        console.log(`P65 ${view}: ${label}: ok (embed ${[...new Set(seen.map((state) => state.height))].join(', ')}px, canvas ${[...new Set(seen.map((state) => state.canvas))].join(', ')}px)`)
+      } catch (error) {
+        failed += 1
+        console.error(`P65 ${view}: ${label}: ${error.message}`)
+      }
+      await page.close()
+    }
+    const quadrat = 'def quadrat(x):\n    return x * x\n\nquadrat(quadrat(2))\n'
+    await run('quadrat(quadrat(2)), one-line calls as boxes in the tree', quadrat, 'Kasten mit Bäumen', (seen) => {
+      // The inner call's box in the outer tree, then the outer call's.
+      assert.ok(seen.filter((state) => state.boxesInTrees === 1).length >= 4, 'a box in the tree')
+      assert.ok(Math.max(...seen.map((state) => state.trees)) >= 2, 'a tree in the box, in the tree')
+      assert.deepEqual([...new Set(seen.map((state) => state.canvas))], [seen[0].canvas], 'one canvas height')
+    })
+    await run('quadrat(quadrat(2)), inline as before', quadrat, 'Baum', (seen) => {
+      assert.equal(Math.max(...seen.map((state) => state.boxesInTrees)), 0, 'no box')
+      assert.deepEqual([...new Set(seen.map((state) => state.canvas))], [seen[0].canvas], 'one canvas height')
+    })
+    const auswerten = "def ist_ausgewertet(baum):\n    if isinstance(baum, list):\n        return False\n    return True\n\ndef operator_anwenden(op, x, y):\n    if op == '+':\n        return x + y\n    return x * y\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], auswerten(baum[1]), auswerten(baum[2]))\n\nauswerten(['+', 2, ['*', 3, 4]])\n"
+    for (const view of ['Kasten mit Bäumen', 'Baum']) {
+      await run('an Etappe 4 evaluator', auswerten, view, (seen) => {
+        assert.ok(Math.max(...seen.map((state) => state.boxesInTrees)) >= 2, 'boxes in trees')
+        assert.deepEqual([...new Set(seen.map((state) => state.canvas))], [seen[0].canvas], 'one canvas height')
+      })
+    }
+    const deep = 'def summe(n):\n    if n == 0:\n        return 0\n    return n + summe(n - 1)\n\nsumme(9)\n'
+    const deepShort = 'def summe(n):\n    return 0 if n == 0 else n + summe(n - 1)\n\nsumme(9)\n'
+    for (const [view, source] of [['Baum', deep], ['Kasten mit Bäumen', deep], ['Kasten mit Bäumen', deepShort]]) {
+      await run(`the marker of a deep chain in a tree${source === deepShort ? ', one-line calls' : ''}`, source, view, (seen) => {
+        const marked = seen.filter((state) => state.marker)
+        assert.ok(marked.length > 0, 'the marker shows')
+        assert.ok(marked.some((state) => state.markerInTree), 'inside a tree, in a call node\'s place')
+        assert.ok(marked.every((state) => /^… \d+ weitere Aufrufe von summe\(/.test(state.marker)), `its text: ${marked[0]?.marker}`)
+      })
+    }
   }
   // P62/P63: a function imported from a library or the standard library reads
   // «Funktion» like the file's own, in the footer and in a call box's rows
@@ -1272,7 +1454,7 @@ try {
     const anwenden = "def anwenden(op, x, y):\n    \"\"\"\n    >>> anwenden('*', 3, 4)\n    12\n    \"\"\"\n    if op == '+':\n        return x + y\n"
     const page = await openEmbed({}, '?features=run,repl,visualize,tests,tree')
     const frame = page.frameLocator('#embed')
-    const mode = (name) => frame.locator('.visualizer-mode button', { hasText: name }).click()
+    const mode = (name) => showView(frame, name)
     // The root box's code at each step, a tree as its text.
     const lines = () => frame.locator('.visualizer-view > .visualizer-canvas > .frame-box > .frame-code').evaluate((code) => {
       for (const tree of code.querySelectorAll('.value-tree-scroll')) tree.replaceWith(`[${tree.getAttribute('aria-label')}]`)
@@ -1293,7 +1475,7 @@ try {
     // The line of the root box's code that holds the call (the box's own
     // line numbers are separate lines of innerText).
     const lineOf = (text, call) => text.split('\n').find((line, index, all) => line === call || all[index - 1] === call)
-    for (const name of ['Kasten', 'Ersetzung', 'Baum']) {
+    for (const name of ['Kasten', 'Ersetzung', 'Baum', 'Kasten mit Bäumen']) {
       try {
         await page.evaluate((source) => window.send('visualize', source), `${anwenden}\nxs = []\nanwenden('*', 3, 4)\nprint('x')\nxs.append(1)\n`)
         await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })

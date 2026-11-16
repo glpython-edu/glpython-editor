@@ -132,7 +132,12 @@ export type ShortForm = {
   parens: boolean
 }
 
+// A preset for the visualizer (prop visualizerMode, the embed's
+// ?visualizer=): «box», «substitution», or «tree» = «substitution» with
+// expressions evaluated as trees (P65; until then a mode of its own).
 export type VisualizerMode = 'box' | 'substitution' | 'tree'
+// How calls are shown: as boxes («Kasten») or substituted («Ersetzung»).
+export type CallDisplay = 'box' | 'substitution'
 
 export type AstNode = {
   id: number
