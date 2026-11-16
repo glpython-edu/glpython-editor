@@ -1,12 +1,14 @@
-// The visualizer's tree mode («Baum»): an expression is shown as its syntax
-// tree while it is evaluated. Its steps are exactly those of the
-// substitution mode, each one reducing a subtree to its value, plus one step
-// that opens the tree (the expression replaced by its tree) before the first
-// of them and one that closes it (the value in the line again) after the
-// last. The tree at a step is built from the AST and the same substitution
-// state the substitution mode shows, so tree and chain can't diverge: a call
-// shown inline there is replaced by the tree of its return expression here,
-// any other call stays a node whose box hangs below the tree.
+// The visualizer's option «Ausdrücke als Bäume auswerten» (capability
+// `tree`, P65; until then the mode «Baum»): an expression is shown as its
+// syntax tree while it is evaluated, in «Ersetzung» and in «Kasten». Its
+// steps are exactly those of the mode, each one reducing a subtree to its
+// value, plus one step that opens the tree (the expression replaced by its
+// tree) before the first of them and one that closes it (the value in the
+// line again) after the last. The tree at a step is built from the AST and
+// the same substitution state the mode shows, so tree and chain can't
+// diverge: a call shown inline («Ersetzung», a single `return`) is replaced
+// by the tree of its return expression here, any other call - in «Kasten»
+// every call - is a node in the call's place that draws its box.
 
 // With their extensions, so scripts/check-tree-mode.mjs runs it in Node.
 import { buildSubstitutionsUpTo, type AstNode, type OpenFrame, type TraceStep } from './visualizer.ts'
@@ -81,9 +83,12 @@ function treeRootsOf(nodeIndex: Map<number, AstNode>): Map<number, AstNode> {
   return rootOf
 }
 
-// The substitution mode's steps, with the steps that open and close each
-// expression's tree. `substitutionSteps` is substitutionModeSteps(trace).
-export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[], nodeIndexByFile: Map<string, Map<number, AstNode>>): TreeModeSteps {
+// The mode's steps, with the steps that open and close each expression's
+// tree. `modeSteps` is substitutionModeSteps(trace) in «Ersetzung»
+// (`inlineCalls`: a call with a short form is shown inline), the trace
+// itself in «Kasten».
+export function treeModeSteps(trace: TraceStep[], modeSteps: TraceStep[], nodeIndexByFile: Map<string, Map<number, AstNode>>, inlineCalls = true): TreeModeSteps {
+  const isInline = (enter: TraceStep | undefined): enter is TraceStep => inlineCalls && Boolean(enter?.shortForm)
   const enterByFrame = new Map<number, TraceStep>()
   const traceByStep = new Map<number, TraceStep>()
   for (const step of trace) {
@@ -109,12 +114,12 @@ export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[]
   }
   // Where a step acts, as the tree sees it: a call-enter at its call site,
   // a step inside an inline call at that call's site (its tree is part of
-  // the caller's).
+  // the caller's; in «Kasten» no call is inline).
   const hostOf = (step: TraceStep) => {
     let frameId = step.kind === 'call-enter' ? (step.parentFrameId ?? 0) : step.frameId
     let path = step.path
     let nodeId = step.nodeId
-    for (let enter = enterByFrame.get(frameId); frameId !== 0 && enter?.shortForm; enter = enterByFrame.get(frameId)) {
+    for (let enter = enterByFrame.get(frameId); frameId !== 0 && isInline(enter); enter = enterByFrame.get(frameId)) {
       path = enter.path
       nodeId = enter.nodeId
       frameId = enter.parentFrameId ?? 0
@@ -177,7 +182,7 @@ export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[]
     open.delete(episode.frameId)
   }
 
-  for (const step of substitutionSteps) {
+  for (const step of modeSteps) {
     const host = hostOf(step)
     const root = REDUCING_KINDS.has(step.kind) ? rootOf(host.path, host.nodeId) : null
     const current = open.get(host.frameId)
@@ -198,7 +203,7 @@ export function treeModeSteps(trace: TraceStep[], substitutionSteps: TraceStep[]
     steps.push(step)
     if (!episode) continue
     if (step.kind === 'call-enter') episode.expansions.push(step.step)
-    if (step.closesFrameId !== null && step.closesFrameId !== undefined && !enterByFrame.get(step.closesFrameId)?.shortForm) episode.expansions.push(step.step)
+    if (step.closesFrameId !== null && step.closesFrameId !== undefined && !isInline(enterByFrame.get(step.closesFrameId))) episode.expansions.push(step.step)
     // Once the expression itself has its value, its tree closes.
     if (step.kind === 'eval' && step.frameId === host.frameId && step.nodeId === root?.id) close(episode, step.step, step)
   }
@@ -270,6 +275,9 @@ export type ExpressionTreeContext = {
   errorKey: string | null
   // A call box's size as drawn (characters, rows), by its key ("box:<frame>").
   boxSize?: (key: string) => { width: number; rows: number } | undefined
+  // Whether a call with a short form is shown inline («Ersetzung», the
+  // default) or as a box («Kasten»), as in treeModeSteps.
+  inlineCalls?: boolean
 }
 
 // A box's size until it has been measured.
@@ -308,6 +316,7 @@ export function treeKeyOf(step: TraceStep | null): string | null {
 // The episode's tree after trace step `uptoStep`.
 export function buildExpressionTree(context: ExpressionTreeContext, episode: TreeEpisode, uptoStep: number): ExpressionTree | null {
   const { trace, nodeIndexByFile, sources, openFrames, nextKey, errorKey } = context
+  const inlineCalls = context.inlineCalls ?? true
   // The frames really open (not one about to open): a call is replaced or
   // becomes a box only once its frame is.
   const openNow = context.framesAt(uptoStep)
@@ -318,7 +327,7 @@ export function buildExpressionTree(context: ExpressionTreeContext, episode: Tre
     if (!substitutions) {
       substitutions = new Map(buildSubstitutionsUpTo(trace, uptoStep, frameId).get(path) ?? [])
       const inline = openFrames.get(frameId)
-      if (inline?.shortForm) for (const [nodeId, value] of inline.shortForm.paramValues) if (!substitutions.has(nodeId)) substitutions.set(nodeId, value)
+      if (inlineCalls && inline?.shortForm) for (const [nodeId, value] of inline.shortForm.paramValues) if (!substitutions.has(nodeId)) substitutions.set(nodeId, value)
       substitutionsByFrame.set(cacheKey, substitutions)
     }
     return substitutions
@@ -415,7 +424,7 @@ export function buildExpressionTree(context: ExpressionTreeContext, episode: Tre
         // A call shown inline in the substitution mode: its return
         // expression's tree, with the parameters' values.
         const frame = [...openNow.values()].find((candidate) => candidate.parentFrameId === frameId && candidate.anchorPath === path && candidate.anchorNodeId === node.id)
-        if (frame?.shortForm) {
+        if (inlineCalls && frame?.shortForm) {
           const returnNode = nodeIndexByFile.get(frame.funcDefPath)?.get(frame.shortForm.returnNodeId)
           if (returnNode) return build(returnNode, frame.frameId, frame.funcDefPath)
         }

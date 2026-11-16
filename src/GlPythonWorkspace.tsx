@@ -5,7 +5,7 @@ import type { Monaco, OnMount } from '@monaco-editor/react'
 import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode, type CallDisplay } from './visualizer'
 import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -76,10 +76,11 @@ type CoreStrings = {
   visualizerModeBox?: string
   visualizerModeSubstitution?: string
   visualizerBoxHint?: string
-  // The third mode («Baum», with the `tree` capability), and why a call stays
-  // a box in the substitution and tree modes: the text after the function's
-  // name, e.g. "has local variables – the call is shown as a box."
-  visualizerModeTree?: string
+  // The option «⋯ Optionen» → «Ausdrücke als Bäume auswerten» (with the
+  // `tree` capability, P65; until then the mode «Baum»), and why a call stays
+  // a box in the substitution mode: the text after the function's name, e.g.
+  // "has local variables – the call is shown as a box."
+  visualizerTrees?: string
   // A Markdown tab's switch (with the host's renderMarkdown): its label, and
   // the file as a page or as its text.
   markdownViewLabel?: string
@@ -271,8 +272,11 @@ type GlPythonWorkspaceProps = {
   capabilities?: Partial<WorkspaceCapabilities>
   compact?: boolean
   command?: WorkspaceCommand | null
-  // Presets the visualizer's mode (e.g. from a LiaScript block). Without it
-  // the mode last chosen in this browser is used, and «substitution» at first.
+  // Presets the visualizer (e.g. from a LiaScript block): «box» (Kasten),
+  // «substitution» (Ersetzung), each without trees, or «tree» (Ersetzung
+  // with the option «Ausdrücke als Bäume auswerten», P65). Without it the
+  // mode and the option last chosen in this browser are used, «substitution»
+  // without trees at first.
   visualizerMode?: VisualizerMode
   // Called when Python starts or stops being busy for more than a moment
   // (a program, a REPL input, Tests, a visualization) - while it is, the run
@@ -312,6 +316,7 @@ function storedConsoleShare(): number {
 
 const animationsStorageKey = 'glpython-visualizer-animations'
 const visualizerModeStorageKey = 'glpython-visualizer-mode'
+const visualizerTreesStorageKey = 'glpython-visualizer-trees'
 const chainCommentsStorageKey = 'glpython-chain-comments'
 
 // Copies text to the clipboard, falling back to the older selection-based
@@ -339,12 +344,22 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-function storedVisualizerMode(): VisualizerMode {
+// The stored mode: «box» or «substitution». A «tree» stored before P65 (the
+// mode «Baum») reads as «substitution» with the trees option on; it isn't
+// rewritten, so an older embed of the same origin still reads its «Baum».
+function storedVisualizerMode(): CallDisplay {
   try {
-    const stored = localStorage.getItem(visualizerModeStorageKey)
-    return stored === 'box' || stored === 'tree' ? stored : 'substitution'
+    return localStorage.getItem(visualizerModeStorageKey) === 'box' ? 'box' : 'substitution'
   } catch {
     return 'substitution'
+  }
+}
+function storedVisualizerTrees(): boolean {
+  try {
+    const stored = localStorage.getItem(visualizerTreesStorageKey)
+    return stored === null ? localStorage.getItem(visualizerModeStorageKey) === 'tree' : stored === 'true'
+  } catch {
+    return false
   }
 }
 
@@ -1126,7 +1141,7 @@ function Frame(props: FrameProps) {
   const treeRange = treeRoot ? locateNodeRenderedRange(lineOffsets, nodeIndex, substitutions, annotations, treeRoot, false, substitutionContext) : null
   let expressionTree: ((boxSize: BoxSizes) => BuiltExpressionTree | null) | null = null
   if (trees && episode && treeRange) {
-    const context = { trace, nodeIndexByFile, sources: visualSources, openFrames, framesAt: trees.framesAt, nextKey: treeKeyOf(nextStep), errorKey: treeKeyOf(errorStep) }
+    const context = { trace, nodeIndexByFile, sources: visualSources, openFrames, framesAt: trees.framesAt, nextKey: treeKeyOf(nextStep), errorKey: treeKeyOf(errorStep), inlineCalls: substitutionMode }
     const buildWith = (boxSize: BoxSizes) => {
       const withSizes = { ...context, boxSize }
       const built = buildExpressionTree(withSizes, episode, uptoStep)
@@ -1643,16 +1658,19 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // local rows easing in, value-change flashes) are animated or applied
   // instantly - persisted like the locale choice, defaulting to on.
   const [animationsEnabled, setAnimationsEnabled] = useState<boolean>(() => localStorage.getItem(animationsStorageKey) !== 'false')
-  const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>(() => visualizerModePreset ?? storedVisualizerMode())
+  // How calls are shown, and whether expressions are evaluated as trees (the
+  // option, P65): a preset sets both when the workspace mounts.
+  const [visualizerMode, setVisualizerMode] = useState<CallDisplay>(() => visualizerModePreset ? (visualizerModePreset === 'box' ? 'box' : 'substitution') : storedVisualizerMode())
+  const [treesChosen, setTreesChosen] = useState<boolean>(() => visualizerModePreset ? visualizerModePreset === 'tree' : storedVisualizerTrees())
   const [chainComments, setChainComments] = useState<boolean>(() => {
     try { return localStorage.getItem(chainCommentsStorageKey) !== 'false' } catch { return true }
   })
   const [chainFeedback, setChainFeedback] = useState<'copied' | 'failed' | null>(null)
-  // «Baum» only with its capability; else the substitution mode shows.
-  const effectiveMode: VisualizerMode = visualizerMode === 'tree' && !workspaceCapabilities.tree ? 'substitution' : visualizerMode
-  // The tree mode shows calls as the substitution mode does.
-  const substitutionMode = effectiveMode !== 'box'
-  const treeMode = effectiveMode === 'tree'
+  const effectiveMode = visualizerMode
+  const substitutionMode = visualizerMode === 'substitution'
+  // The trees only with their capability; a block without it ignores the
+  // stored choice and leaves it as it is.
+  const treeMode = treesChosen && workspaceCapabilities.tree
   const valueKindLabels = useMemo(() => ({
     function: t.valueKindFunction ?? 'function',
     class: t.valueKindClass ?? 'class',
@@ -2118,8 +2136,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // In the tree mode, the substitution mode's steps plus those that open and
   // close each expression's tree (see treeModeSteps).
   const treeSteps = useMemo(
-    () => visualTrace && treeMode ? treeModeSteps(visualTrace.trace, substitutionModeSteps(visualTrace.trace), astIndexByFile) : null,
-    [visualTrace, treeMode, astIndexByFile],
+    () => visualTrace && treeMode ? treeModeSteps(visualTrace.trace, substitutionMode ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace, astIndexByFile, substitutionMode) : null,
+    [visualTrace, treeMode, substitutionMode, astIndexByFile],
   )
   const visualTraceSteps = useMemo(
     () => !visualTrace ? [] : treeSteps ? treeSteps.steps : substitutionMode ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace,
@@ -2144,7 +2162,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const treePeek = useVisualizerPeek<TreePeekPayload>(visualizerFrameRef, (target) => (target instanceof Element ? target : target.parentElement)?.closest('[data-tree-peek]') != null)
   const treePeekAccess: TreePeekAccess = { handlers: treePeek.handlers, openKey: treePeek.peek?.key ?? null, id: 'glp-tree-peek', hintId: 'glp-tree-peek-hint' }
   const closeTreePeek = treePeek.close
-  useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode, treeMode]) // eslint-disable-line react-hooks/exhaustive-deps
   // A traced REPL input starts with the session's globals in the footer (P61).
   const globalsTrace = useMemo(() => withSessionGlobals(visualTrace), [visualTrace])
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
@@ -2440,19 +2458,33 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       : ''
     return <Frame frameId={0} path={visualRootPath ?? project.mainFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={boxHintFor} trees={treeMode ? { active: view.activeTrees, framesAt: treeFramesAt } : null} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
   }
-  const changeVisualizerMode = (mode: VisualizerMode) => {
+  // Stay at the same point of the program when the mode or the trees
+  // option changes: the last step of the new list that isn't past the
+  // current one.
+  const keepProgramPoint = (mode: CallDisplay, trees: boolean) => {
+    if (!visualTrace) return
+    const current = currentTraceStep?.step ?? -1
+    const modeSteps = mode === 'substitution' ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace
+    const steps = trees ? treeModeSteps(visualTrace.trace, modeSteps, astIndexByFile, mode === 'substitution').steps : modeSteps
+    let index = -1
+    steps.forEach((step, stepIndex) => { if (step.step <= current) index = stepIndex })
+    setVisualStepIndex(index)
+  }
+  const changeVisualizerMode = (mode: CallDisplay) => {
     if (mode === effectiveMode) return
-    // Stay at the same point of the program: the last step of the new mode's
-    // list that isn't past the current one.
-    if (visualTrace) {
-      const current = currentTraceStep?.step ?? -1
-      const steps = mode === 'tree' ? treeModeSteps(visualTrace.trace, substitutionModeSteps(visualTrace.trace), astIndexByFile).steps : mode === 'substitution' ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace
-      let index = -1
-      steps.forEach((step, stepIndex) => { if (step.step <= current) index = stepIndex })
-      setVisualStepIndex(index)
-    }
+    keepProgramPoint(mode, treeMode)
     setVisualizerMode(mode)
-    try { localStorage.setItem(visualizerModeStorageKey, mode) } catch { /* the choice just isn't remembered */ }
+    try {
+      // A «tree» stored before P65 holds the trees option too: keep it
+      // under its own key before the mode replaces it.
+      if (localStorage.getItem(visualizerTreesStorageKey) === null && localStorage.getItem(visualizerModeStorageKey) === 'tree') localStorage.setItem(visualizerTreesStorageKey, 'true')
+      localStorage.setItem(visualizerModeStorageKey, mode)
+    } catch { /* the choice just isn't remembered */ }
+  }
+  const changeTrees = (trees: boolean) => {
+    keepProgramPoint(effectiveMode, trees)
+    setTreesChosen(trees)
+    try { localStorage.setItem(visualizerTreesStorageKey, String(trees)) } catch { /* the choice just isn't remembered */ }
   }
 
   useLayoutEffect(() => {
@@ -2882,8 +2914,10 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // wraps differently), starts again.
   const steadyHeightRef = useRef(0)
   // The steps still to measure, for which trace, mode and width.
-  const [steadyMeasure, setSteadyMeasure] = useState<{ trace: TraceResult | null; mode: VisualizerMode; width: number; pending: number[] }>({ trace: null, mode: 'box', width: 0, pending: [] })
-  const steadyMeasureCurrent = steadyMeasure.trace === visualTrace && steadyMeasure.mode === effectiveMode
+  const [steadyMeasure, setSteadyMeasure] = useState<{ trace: TraceResult | null; mode: string; width: number; pending: number[] }>({ trace: null, mode: '', width: 0, pending: [] })
+  // Measured anew for each mode, with and without trees.
+  const steadyModeKey = `${effectiveMode}:${treeMode}`
+  const steadyMeasureCurrent = steadyMeasure.trace === visualTrace && steadyMeasure.mode === steadyModeKey
   const raiseSteadyHeight = (height: number) => {
     const canvas = visualizerCanvasRef.current
     if (!canvas || height <= steadyHeightRef.current) return
@@ -2901,14 +2935,14 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
         width = canvas.offsetWidth
         steadyHeightRef.current = 0
         canvas.style.minHeight = ''
-        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: effectiveMode, width, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
+        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: steadyModeKey, width, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
       }
       raiseSteadyHeight(canvas.offsetHeight)
     })
     observer.observe(canvas)
     return () => observer.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisualizing, visualTrace, effectiveMode, compact])
+  }, [isVisualizing, visualTrace, steadyModeKey, compact])
   const steadyMeasureRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const container = steadyMeasureRef.current
@@ -2941,7 +2975,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const testsFromActions = () => { if (isVisualizing) exitVisualizer(); runTests() }
   const actionsNode = workspaceCapabilities.actions ? <div className="editor-actions">{(workspaceCapabilities.run || showStopButton) && <button className="run-button" onClick={showStopButton ? stopPython : isRunning ? undefined : runFromActions} aria-disabled={isRunning && !showStopButton}><span className="run-button-labels"><span aria-hidden={showStopButton}><Play size={15} fill="currentColor" /> {t.runProject}</span><span aria-hidden={!showStopButton}><Square size={13} fill="currentColor" /> {t.stop ?? 'Stop'}</span></span></button>}{workspaceCapabilities.tests && <button className="secondary-button" onClick={testsFromActions} disabled={isTesting || inputRequest !== null}><FlaskConical size={15} /> {t.runTests ?? 'Tests'}</button>}{workspaceCapabilities.visualization && <button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading || inputRequest !== null}><Workflow size={15} /> {t.visualize}</button>}{workspaceCapabilities.resetOutput && <button className="secondary-button" onClick={resetPython}><RotateCcw size={15} /> {t.resetOutput}</button>}</div> : null
   const breadcrumbsNode = <div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong></div>
-  const visualizerBarNode = <div className="visualizer-bar">{visualizerBarStart}{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
+  const visualizerBarNode = <div className="visualizer-bar">{visualizerBarStart}{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button></div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.tree && <button type="button" role="menuitemcheckbox" aria-checked={treeMode} className="visualizer-options-item" onClick={() => changeTrees(!treeMode)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerTrees ?? 'Evaluate expressions as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}{isMarkdown && !isVisualizing && <div className="markdown-switch" role="group" aria-label={t.markdownViewLabel ?? 'Show the file'}><button type="button" aria-pressed={markdownView === 'page'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'page' }))}>{t.markdownPage ?? 'View'}</button><button type="button" aria-pressed={markdownView === 'text'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'text' }))}>{t.markdownText ?? 'Text'}</button></div>}</div>
   const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><TreePeekContext.Provider value={treePeekAccess}>{rootFrame(currentStepView)}</TreePeekContext.Provider></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{fullValueAccess.showTrees && <span id="glp-tree-peek-hint" hidden>{t.showTree ?? 'Show tree'}</span>}{treePeek.peek && fullValueAccess.trees.get(treePeek.peek.payload.value) && <div className="visualizer-globals-peek visualizer-tree-peek" id="glp-tree-peek" {...treePeek.boxProps}><GlobalsPeekTree tree={fullValueAccess.trees.get(treePeek.peek.payload.value)!} label={treePeek.peek.payload.value} /></div>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>

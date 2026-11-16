@@ -10,6 +10,10 @@
 //   chain's, so tree and chain can't diverge;
 // - a reduction moves no node of the tree: only a step that replaces an
 //   inline call by its return expression's tree lays it out afresh.
+// - P65: the same in «Kasten» (the trace's own steps, no call inline): a
+//   one-line `return` call is a box in the tree, with the box one step early
+//   (call-pending) as for any other call, and the box's return expression a
+//   tree of its own; a deep chain of such calls stays one chain of boxes.
 //
 //   npm run test:tree
 import assert from 'node:assert/strict'
@@ -28,6 +32,8 @@ const programs = {
   builtins: 'len([1, 2]) + max(2, 5)\n',
   keywords: 'def teile(a, b=2, *rest):\n    return a / b\n\nteile(b=4, a=8)\nteile(6)\nteile(*[9, 3])\n',
   boxInPlace: 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5]) + 1\n',
+  nested: 'def quadrat(x):\n    return x * x\n\nquadrat(quadrat(2))\n',
+  deep: 'def summe(n):\n    return 0 if n == 0 else n + summe(n - 1)\n\nsumme(9)\n',
 }
 
 const python = `
@@ -60,17 +66,24 @@ const check = (label, test) => {
 const describeTree = (tree) => `${tree.edgeLabel ? `${tree.edgeLabel}:` : ''}${tree.kind === 'box' ? 'BOX' : tree.kind === 'leaf' ? tree.text : `${tree.label}(${tree.children.map(describeTree).join(', ')})`}`
 const describeStep = (step) => step.treePhase ?? (step.kind === 'call-enter' ? `enter ${step.func}` : step.kind)
 
-for (const [name, result] of Object.entries(results)) {
+// «Ersetzung» with trees (until P65 the mode «Baum») and «Kasten» with trees.
+const modes = [
+  { mode: 'Ersetzung', inlineCalls: true, stepsOf: (trace) => substitutionModeSteps(trace) },
+  { mode: 'Kasten', inlineCalls: false, stepsOf: (trace) => trace },
+]
+for (const { mode, inlineCalls, stepsOf } of modes) for (const [name, result] of Object.entries(results)) {
   const source = programs[name]
   const nodeIndexByFile = new Map(Object.entries(result.ast).map(([path, file]) => [path, indexAstNodes(file)]))
-  const substitution = substitutionModeSteps(result.trace)
-  const { steps, episodes } = treeModeSteps(result.trace, substitution, nodeIndexByFile)
-  const context = (step) => ({ trace: result.trace, nodeIndexByFile, sources: { 'main.py': source }, openFrames: computeOpenFramesUpTo(result.trace, step), framesAt: (other) => computeOpenFramesUpTo(result.trace, other), nextKey: null, errorKey: null })
+  const substitution = stepsOf(result.trace)
+  const { steps, episodes } = treeModeSteps(result.trace, substitution, nodeIndexByFile, inlineCalls)
+  const context = (step) => ({ trace: result.trace, nodeIndexByFile, sources: { 'main.py': source }, openFrames: computeOpenFramesUpTo(result.trace, step), framesAt: (other) => computeOpenFramesUpTo(result.trace, other), nextKey: null, errorKey: null, inlineCalls })
   // Each tree as the visualizer shows it, step by step.
   const shown = episodes.map((episode) => episode.shownSteps.map((step) => buildExpressionTree(context(step), episode, step)))
-  result.shown = shown
+  result[inlineCalls ? 'shown' : 'shownBox'] = shown
+  result[inlineCalls ? 'episodes' : 'episodesBox'] = episodes
+  result[inlineCalls ? 'steps' : 'stepsBox'] = steps
 
-  check(`${name}: «Baum» is «Ersetzung» plus open and close`, () => {
+  check(`${mode}, ${name}: the trees are «${mode}» plus open and close`, () => {
     assert.deepEqual(steps.filter((step) => !step.treePhase), substitution)
     // Every tree opens right before a step of its own and closes after it.
     for (const episode of episodes) {
@@ -81,7 +94,7 @@ for (const [name, result] of Object.entries(results)) {
     assert.equal(steps.length, substitution.length + 2 * episodes.length)
   })
 
-  check(`${name}: a reduction moves no node`, () => {
+  check(`${mode}, ${name}: a reduction moves no node`, () => {
     episodes.forEach((episode, index) => {
       let previous = null
       episode.shownSteps.forEach((step, position) => {
@@ -174,6 +187,54 @@ check('the → chain export: the whole statement, wherever the scrubber is in it
     assert.ok(ofStatement.length > 3, `${name}: steps of the statement`)
     for (const step of [ofStatement[0], ofStatement[Math.floor(ofStatement.length / 2)], ofStatement.at(-1)]) assert.equal(chainAt(step), full, `${name}: at step ${step.step}`)
   }
+})
+
+// «Kasten» with trees (P65): no call inline.
+const patternBox = (name) => results[name].stepsBox.map(describeStep)
+const shapesBox = (name, episode = 0) => results[name].shownBox[episode].map((built) => describeTree(built.tree)).filter((text, index, all) => index === 0 || text !== all[index - 1])
+const textsBox = (name, episode = 0) => results[name].shownBox[episode].map((built) => built.text).filter((text, index, all) => index === 0 || text !== all[index - 1])
+check('Kasten, quadrat(2 + 1): a one-line return is a box in the tree, announced one step early', () => {
+  const steps = patternBox('shortForm')
+  assert.deepEqual(steps.slice(0, 5), ['exec', 'open', 'eval', 'call-pending', 'enter quadrat'], 'the box one step early, as for any call')
+  assert.deepEqual(shapesBox('shortForm'), ['quadrat(x:+(2, 1))', 'quadrat(x:3)', 'BOX', '9'], 'the call stays a box; never its body\'s tree in the caller\'s')
+  const pending = results.shortForm.stepsBox.find((step) => step.kind === 'call-pending')
+  const outer = results.shortForm.episodesBox[0]
+  assert.ok(outer.shownSteps.includes(pending.step), 'the pending step belongs to the caller\'s tree')
+  const enter = results.shortForm.trace.find((step) => step.kind === 'call-enter')
+  const close = results.shortForm.trace.find((step) => step.closesFrameId === enter.frameId)
+  assert.ok(outer.expansions.includes(enter.step) && outer.expansions.includes(close.step), 'laid out again where the box opens and closes')
+  // The box's own line: its return expression as a tree, the parameter read.
+  const inner = results.shortForm.episodesBox.find((episode) => episode.frameId === enter.frameId)
+  assert.ok(inner, 'a tree in the box')
+  assert.deepEqual(textsBox('shortForm', results.shortForm.episodesBox.indexOf(inner)), ['x * x', '3 * x', '3 * 3', '9'])
+})
+check('Kasten, quadrat(quadrat(2)): a box in the tree, and a box in its argument', () => {
+  assert.deepEqual(shapesBox('nested'), ['quadrat(x:quadrat(x:2))', 'quadrat(x:BOX)', 'quadrat(x:4)', 'BOX', '16'])
+  assert.equal(results.nested.episodesBox.filter((episode) => episode.frameId !== 0).length, 2, 'one tree in each box')
+})
+check('Ersetzung, quadrat(quadrat(2)): as before P65, both calls inline', () => {
+  assert.deepEqual(shapes('nested'), ['quadrat(x:quadrat(x:2))', 'quadrat(x:*(2, 2))', 'quadrat(x:4)', '*(4, 4)', '16'])
+  assert.equal(results.nested.episodes.length, 1, 'one tree, no boxes')
+})
+check('Kasten, summe(9): ten one-line calls, one chain of boxes, each with its tree', () => {
+  const enters = results.deep.trace.filter((step) => step.kind === 'call-enter')
+  assert.equal(enters.length, 10)
+  // Each call's box opens in its caller's tree (the module's, then each box's).
+  for (const enter of enters) {
+    const host = results.deep.episodesBox.find((episode) => episode.frameId === (enter.parentFrameId ?? 0) && episode.shownSteps.includes(enter.step))
+    assert.ok(host, `the call of frame ${enter.frameId} in its caller's tree`)
+    assert.ok(host.expansions.includes(enter.step), `its box makes room at step ${enter.step}`)
+  }
+  // At the deepest step, the boxes in the trees form the call stack.
+  const deepest = enters.at(-1).step
+  const nodeIndexByFile = new Map(Object.entries(results.deep.ast).map(([path, file]) => [path, indexAstNodes(file)]))
+  const open = computeOpenFramesUpTo(results.deep.trace, deepest)
+  const context = { trace: results.deep.trace, nodeIndexByFile, sources: { 'main.py': programs.deep }, openFrames: open, framesAt: (other) => computeOpenFramesUpTo(results.deep.trace, other), nextKey: null, errorKey: null, inlineCalls: false }
+  const boxed = results.deep.episodesBox.filter((episode) => episode.shownSteps.includes(deepest)).flatMap((episode) => buildExpressionTree(context, episode, deepest)?.boxes.map((frame) => frame.frameId) ?? [])
+  assert.deepEqual(boxed.sort((a, b) => a - b), enters.map((enter) => enter.frameId).sort((a, b) => a - b), 'every open call is a box in its caller\'s tree')
+})
+check('Ersetzung, summe(9): as before P65, inline, one tree', () => {
+  assert.equal(results.deep.episodes.length, 1)
 })
 
 if (failed > 0) process.exit(1)

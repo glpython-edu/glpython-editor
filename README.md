@@ -166,27 +166,42 @@ statements, no `return <expression>`, an expression that can't be written out;
 the runtime's `boxReason` on the call's step). In **box** mode every call opens
 a box.
 
-The mode last chosen is remembered per browser. A host can preset it with the
-`visualizerMode` prop (`'box'`, `'substitution'` or `'tree'`), and the embed with
-the `visualizer=box`, `visualizer=substitution` or `visualizer=tree` query
-parameter. The toggle's texts are `visualizerModeLabel`, `visualizerModeBox`,
-`visualizerModeSubstitution` and `visualizerModeTree`, all optional like
-`visualizerBoxHint` (the box's note without a reason).
+The mode last chosen is remembered per browser (`glpython-visualizer-mode`),
+and so is the trees option below (`glpython-visualizer-trees`). A host can
+preset both with the `visualizerMode` prop, and the embed with the
+`visualizer=` query parameter:
 
-### Tree mode (`tree`)
+| Preset | Calls | Trees |
+|---|---|---|
+| `box` | box | off |
+| `substitution` | substitution | off |
+| `tree` | substitution | on (until P65 the mode «Baum») |
+| none | the stored mode | the stored option |
+
+A preset wins when the workspace mounts and isn't stored; a click stores the
+choice. A `tree` stored as the mode before P65 reads as substitution with
+the option on; it isn't rewritten, so an older embed of the same origin still
+reads it. The toggle's texts are `visualizerModeLabel`, `visualizerModeBox`
+and `visualizerModeSubstitution`, all optional like `visualizerBoxHint` (the
+box's note without a reason).
+
+### Expressions as trees (`tree`)
 
 With the capability `tree` (off by default; the embed's `features=tree`), the
-switch has a third mode, **Baum**: an expression is shown as its syntax tree
-while it is evaluated. Without the capability there is no third button, and a
-stored or preset `'tree'` shows the substitution mode. For an expression `e`
+visualizer's «⋯ Optionen» has the switch **Ausdrücke als Bäume auswerten**
+(`visualizerTrees`; until P65 a third mode, «Baum»): an expression is shown
+as its syntax tree while it is evaluated, in either mode. Without the
+capability there is no switch, and a stored or preset option is ignored (and
+kept). For an expression `e`
 (the value of an expression statement, an assignment or a `return`, an `if`'s
 or `while`'s condition; not a bare name or literal):
 1. **Open:** one step replaces `e` by its tree, in a box at its place in the line.
-2. **Reductions:** exactly the substitution mode's steps, each one a subtree
-   becoming its value; a node without a step of its own (a display, `-x`)
-   becomes its value with its last child. A call with a single
+2. **Reductions:** exactly the mode's steps, each one a subtree becoming its
+   value; a node without a step of its own (a display, `-x`) becomes its
+   value with its last child. In substitution mode a call with a single
    `return <expression>` is replaced by that expression's tree. Any other
-   call, once its box opens, has the box in its node's place - the parent's
+   call - in box mode every call - once its box opens (or is about to, one
+   step early), has the box in its node's place - the parent's
    edge leads to the box's top, its siblings stay on their row - without
    the note of the substitution mode (the box in the call's place shows it
    stays a box); inside it, each line has its own tree and calls of their
@@ -602,8 +617,8 @@ macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 (`visualize`) or its → chain export (`export`) unless listed (capabilities
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
 coverage after Tests (capability `coverage`), `listtree` lists drawn as
-trees (capability `listTree`) and `tree` the visualizer's mode «Baum»
-(capability `tree`), which a missing `features` doesn't; and `size=large`
+trees (capability `listTree`) and `tree` the visualizer's option «Ausdrücke
+als Bäume auswerten» (capability `tree`), which a missing `features` doesn't; and `size=large`
 shows bigger code.
 
 **Its height is the parent's.** The embed fills its iframe and reports the
