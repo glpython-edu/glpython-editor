@@ -13,7 +13,7 @@ import type { ErrorHint, ErrorHintContext } from './errorHints'
 import { TreeView } from './TreeView'
 import { NODE_HEIGHT, ROW_HEIGHT, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
 import { activeTreesAt, buildExpressionTree, episodeTreeLayout, treeKeyOf, treeModeSteps, type TreeEpisode } from './treeMode'
-import { downloadBlob, stepImageName, zipStepImages } from './stepImages'
+import { contentRight, downloadBlob, keepLinesWhole, STEP_IMAGE_MARGIN, stepImageName, zipStepImages } from './stepImages'
 
 type CoreStrings = {
   exitVisualizer: string
@@ -3040,9 +3040,11 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       await frames()
       if (isCancelled()) return
       const steps = [...layer.querySelectorAll<HTMLElement>('[data-step-image]')]
-      // All pictures as large as the largest step: the canvas's width (or a
-      // step's wider boxes), the tallest step's height.
-      const width = Math.ceil(Math.max(job.width, ...steps.map((frame) => frame.scrollWidth)))
+      for (const frame of steps) keepLinesWhole(frame)
+      // All pictures as large as the largest step: cropped to the widest
+      // step's content and a margin (a course scales a picture to its
+      // column), the tallest step's height.
+      const width = Math.ceil(Math.max(...steps.map(contentRight)) + STEP_IMAGE_MARGIN)
       const height = Math.ceil(Math.max(...steps.map((frame) => frame.offsetHeight)))
       for (const frame of steps) {
         frame.style.width = `${width}px`

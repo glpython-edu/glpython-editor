@@ -1484,10 +1484,98 @@ try {
       const sizes = new Set(names.map((name) => { const view = new DataView(files[name].buffer, files[name].byteOffset); return `${view.getUint32(16)}x${view.getUint32(20)}` }))
       assert.equal(sizes.size, 1, `one size: ${[...sizes]}`)
       const width = await frame.locator('.visualizer-canvas').evaluate((canvas) => canvas.offsetWidth)
-      assert.ok(Number([...sizes][0].split('x')[0]) >= 2 * width, `at least the canvas's width, twice: ${[...sizes]} for ${width}px`)
+      assert.ok(Number([...sizes][0].split('x')[0]) < 2 * width, `cropped to the content, narrower than the canvas, twice: ${[...sizes]} for ${width}px`)
       const inPictures = await marksIn(names.map((name) => Buffer.from(files[name]).toString('base64')))
       inPictures.forEach(({ green, magenta }, index) => assert.ok(green === 0 && magenta === 0, `${names[index]}: no marks (${green} green, ${magenta} magenta)`))
       console.log(`${label}: ok (${names.length} pictures, ${[...sizes][0]})`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
+  // P68b: a value in a call box's variable row lands in its row in the
+  // picture, as on screen - strings too ('+' broke after every character
+  // and spilled below the row). The values are coloured blue; at each step
+  // every blue pixel of the picture lies in the place a value has on
+  // screen (twice its size; the picture starts at the view's top edge, 12px
+  // above the canvas). And the pictures are cropped to the content: much
+  // narrower than the visualizer here, all of one size, nothing cut off at
+  // their right edge.
+  {
+    const label = 'steps as images: values in their rows, cropped to the content'
+    const source = "def anwenden(op, x, y):\n    if op == '+':\n        return x + y\n    return None\n\ndef zeige(wort, liste):\n    return wort + liste[0]\n\na = anwenden('+', 2, 3)\nb = zeige('ab', ['+', 'x'])\n"
+    const page = await openEmbed({}, '?features=visualize,stepimages&visualizer=box&cap=900')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((source) => window.send('visualize', source), source)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await frame.locator('head').evaluate((head) => { const style = document.createElement('style'); style.textContent = '.frame-vars .locals-value { color: #0000FF !important }'; head.append(style) })
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const animate = frame.getByRole('menuitemcheckbox', { name: 'Schritte animieren' })
+      if (await animate.getAttribute('aria-checked') === 'true') await animate.click()
+      await animate.press('Escape')
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const total = Number((await frame.locator('.visualizer-step-count').innerText()).match(/von (\d+)/)[1])
+      await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+      const places = []
+      for (let number = 0; number <= total; number += 1) {
+        if (number > 0) await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+        places.push(await frame.locator('.visualizer-canvas').evaluate((canvas) => {
+          const origin = canvas.getBoundingClientRect()
+          return [...canvas.querySelectorAll('.frame-vars .locals-value')].map((value) => { const box = value.getBoundingClientRect(); return { text: value.textContent, left: box.left - origin.left, right: box.right - origin.left, top: box.top - origin.top + 12, bottom: box.bottom - origin.top + 12 } })
+        }))
+      }
+      assert.ok(places.flat().some((place) => place.text === "'+'") && places.flat().some((place) => place.text === "['+', 'x']"), 'the string values show')
+      const canvasWidth = await frame.locator('.visualizer-canvas').evaluate((canvas) => canvas.offsetWidth)
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).click()
+      const dialog = frame.getByRole('dialog', { name: 'Schritte als Bilder' })
+      await dialog.getByLabel('Von Schritt').fill('0')
+      await dialog.getByLabel('bis Schritt').fill(String(total))
+      const downloading = page.waitForEvent('download', { timeout: 120000 })
+      await dialog.getByRole('button', { name: 'Herunterladen' }).click()
+      const download = await downloading
+      const { unzipSync } = await import('fflate')
+      const files = unzipSync(new Uint8Array(await readFile(await download.path())))
+      const names = Object.keys(files)
+      assert.equal(names.length, total + 1, 'one picture per step')
+      const results = await page.evaluate(async ({ pngs, places }) => {
+        const result = []
+        for (const [index, base64] of pngs.entries()) {
+          const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: 'image/png' }))
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+          const context = canvas.getContext('2d')
+          context.drawImage(bitmap, 0, 0)
+          const { data, width, height } = context.getImageData(0, 0, bitmap.width, bitmap.height)
+          const inside = (x, y) => places[index].some((place) => x >= (place.left - 2) * 2 && x <= (place.right + 2) * 2 && y >= (place.top - 2) * 2 && y <= (place.bottom + 2) * 2)
+          let blue = 0
+          const outside = []
+          for (let y = 0; y < height; y += 1) {
+            for (let x = 0; x < width; x += 1) {
+              const at = (y * width + x) * 4
+              if (data[at + 2] > 170 && data[at] < 80 && data[at + 1] < 80) {
+                blue += 1
+                if (!inside(x, y) && outside.length < 3) outside.push([x, y])
+              }
+            }
+          }
+          // The rightmost 8 pixel columns: the background only.
+          const background = [data[0], data[1], data[2]].join()
+          let cut = 0
+          for (let y = 0; y < height; y += 1) for (let x = width - 8; x < width; x += 1) if ([data[(y * width + x) * 4], data[(y * width + x) * 4 + 1], data[(y * width + x) * 4 + 2]].join() !== background) cut += 1
+          result.push({ width, height, blue, outside, cut })
+        }
+        return result
+      }, { pngs: names.map((name) => Buffer.from(files[name]).toString('base64')), places })
+      results.forEach(({ blue, outside }, index) => {
+        if (places[index].length > 0) assert.ok(blue > 0, `${names[index]}: the values show`)
+        assert.deepEqual(outside, [], `${names[index]}: every value's pixels in its place (${places[index].map((place) => place.text).join(' ')})`)
+      })
+      assert.equal(new Set(results.map(({ width, height }) => `${width}x${height}`)).size, 1, 'one size')
+      assert.ok(results[0].width < 2 * canvasWidth * 0.75, `cropped: ${results[0].width}px for a ${canvasWidth}px wide visualizer`)
+      results.forEach(({ cut }, index) => assert.equal(cut, 0, `${names[index]}: nothing at the right edge`))
+      console.log(`${label}: ok (${names.length} pictures, ${results[0].width}x${results[0].height} for ${canvasWidth}px)`)
     } catch (error) {
       failed += 1
       console.error(`${label}: ${error.message}`)
