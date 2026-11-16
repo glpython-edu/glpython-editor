@@ -40,8 +40,9 @@ function createEmbedProject(source: string, files?: GlPythonFile[], mainFile?: s
 // option: which of the embed's own parts to show (here: the REPL, the
 // visualizer and the → chain export). Without it, everything shows - except
 // "coverage" (after Tests, what no example executed), "listtree" (lists
-// that read as a tree drawn as one) and "tree" (the visualizer's mode
-// «Baum»), which a course switches on explicitly.
+// that read as a tree drawn as one), "tree" (the visualizer's mode
+// «Baum») and "stepimages" (the visualizer's steps as pictures, for the
+// IDE), which a course switches on explicitly.
 const featureList = (() => {
   const list = new URLSearchParams(window.location.search).get('features')
   return list === null ? null : new Set(list.split(',').map((feature) => feature.trim()))
@@ -301,6 +302,7 @@ export function App() {
           coverage: featureList?.has('coverage') ?? false,
           listTree: featureList?.has('listtree') ?? false,
           tree: featureList?.has('tree') ?? false,
+          stepImages: featureList?.has('stepimages') ?? false,
           emptyOutput: mode !== 'visual',
         }}
       />

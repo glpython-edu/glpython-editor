@@ -50,10 +50,18 @@
     "react-dom": "^19.2.8"
   },
   "peerDependenciesMeta": {
-    "@monaco-editor/react": { "optional": true },
-    "lucide-react": { "optional": true },
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
+    "@monaco-editor/react": {
+      "optional": true
+    },
+    "lucide-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -62,6 +70,8 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "d3-flextree": "2.1.2",
+    "fflate": "0.8.3",
+    "html-to-image": "1.11.13",
     "lucide-react": "^1.47.0",
     "oxlint": "^1.81.0",
     "playwright-core": "^1.48.2",

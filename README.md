@@ -113,9 +113,27 @@ shows nothing for `None`, as CPython's REPL.
 
 The visualizer's toolbar is one line: first step, previous step, next step,
 last step, the scrubber, the step counter, the box/substitution switch, the
-**⋯ Options** menu (animated steps, and with `export` the → chain's comments and
-copy button) and ✕ to exit (`visualizerFirstStep`, `visualizerLastStep`,
-`visualizerOptions`; ✕ uses `exitVisualizer`).
+**⋯ Options** menu (animated steps, with `export` the → chain's comments and
+copy button, and with `stepImages` «Steps as images …») and ✕ to exit
+(`visualizerFirstStep`, `visualizerLastStep`, `visualizerOptions`; ✕ uses
+`exitVisualizer`).
+
+**Steps as images** (capability `stepImages`; on by default, so in the IDE;
+off in the embed unless `features=` lists `stepimages`): for exercises in
+which learners put a few steps back in order. «Steps as images …» opens a
+dialog with a range of the step counter's numbers (0 is «Before the start»;
+by default the current step and the five after it); «Download» gives a zip
+of PNGs named by those numbers (`00.png`, `07.png`, …), nothing else. Each
+step is drawn off-screen (`.visualizer-snapshot`) in the mode and with the
+options shown, at the visualizer's width, and all pictures of a zip have one
+size: the widest step's width, the tallest step's height, smaller steps
+filled with the background from the top left; pixel ratio 2, light colours.
+A picture shows the step's state and nothing that gives the order away: no
+arrows, no marking of what comes next, of what has just changed, of the
+current or the executed lines, no own background or sticky place for the
+current box's variable row, no animation, and neither step bar, footer of
+global variables nor console. `html-to-image` and `fflate` are loaded on the
+first use (`src/stepImages.ts`). Made for Chrome.
 
 With animated steps, a call box flies in from its function's entry (in the
 footer of global variables), and a return value slides from the box's return
@@ -618,7 +636,8 @@ macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
 coverage after Tests (capability `coverage`), `listtree` lists drawn as
 trees (capability `listTree`) and `tree` the visualizer's option «Ausdrücke
-als Bäume auswerten» (capability `tree`), which a missing `features` doesn't; and `size=large`
+als Bäume auswerten» (capability `tree`) and `stepimages` the visualizer's
+«Schritte als Bilder …» (capability `stepImages`), which a missing `features` doesn't; and `size=large`
 shows bigger code.
 
 **Its height is the parent's.** The embed fills its iframe and reports the
