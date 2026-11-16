@@ -17,6 +17,67 @@ export function stepImageName(number: number, last: number): string {
   return `${String(number).padStart(Math.max(2, String(last).length), '0')}.png`
 }
 
+// Space right of the widest step's content (P68b: the pictures are cropped
+// to it, since a course or exam.net scales a picture to its column).
+export const STEP_IMAGE_MARGIN = 12
+
+// What is on one line in the step stays on one line in its picture. The
+// picture is a copy with each element's computed width fixed (rounded),
+// drawn at the pixel ratio: its parts can add up to a fraction more than
+// that width. A variable row (a wrapping flex box exactly as wide as name
+// and value) then put its value on a line of its own, below the row, and a
+// value with `overflow-wrap: anywhere` ('+') broke after every character
+// (P68b). So a wrapping flex box whose items are on one line in the step,
+// and every element whose text - its own and its descendants' - is on one
+// line, gets no line break. The step's own layout doesn't change: they are
+// on one line already.
+export function keepLinesWhole(frame: HTMLElement) {
+  for (const element of [frame, ...frame.querySelectorAll<HTMLElement>('*')]) {
+    if (getComputedStyle(element).flexWrap !== 'wrap') continue
+    const tops = new Set([...element.children].filter((child) => getComputedStyle(child).position !== 'absolute').map((child) => Math.round(child.getBoundingClientRect().top)))
+    if (tops.size <= 1) element.style.flexWrap = 'nowrap'
+  }
+  keepTextOnOneLine(frame)
+}
+
+function keepTextOnOneLine(frame: HTMLElement) {
+  const range = document.createRange()
+  const lineTops = (element: Element) => {
+    const tops = new Set<number>()
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue
+      range.selectNodeContents(node)
+      for (const rect of range.getClientRects()) tops.add(Math.round(rect.top))
+      if (tops.size > 1) break
+    }
+    return tops.size
+  }
+  for (const element of [frame, ...frame.querySelectorAll<HTMLElement>('*')]) {
+    const style = getComputedStyle(element)
+    if (style.getPropertyValue('text-wrap-mode') === 'nowrap' || style.whiteSpace === 'pre' || style.whiteSpace === 'nowrap') continue
+    if (lineTops(element) !== 1) continue
+    element.style.whiteSpace = style.getPropertyValue('white-space-collapse') === 'preserve' ? 'pre' : 'nowrap'
+  }
+}
+
+// How far right the step's content reaches, from the frame's left edge:
+// its text, the boxes' borders, trees and their edges - not the blocks that
+// span the whole width (lines, rows of the module's frame).
+export function contentRight(frame: HTMLElement): number {
+  const left = frame.getBoundingClientRect().left
+  let right = 0
+  const range = document.createRange()
+  const walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.textContent?.trim()) continue
+    range.selectNodeContents(node)
+    right = Math.max(right, range.getBoundingClientRect().right - left)
+  }
+  for (const element of frame.querySelectorAll('.frame-box:not(.frame-box--root), .frame-tree, svg')) right = Math.max(right, element.getBoundingClientRect().right - left)
+  return right
+}
+
 export type StepImage = { name: string; frame: HTMLElement }
 
 // Every frame as a PNG of the same size (its own background filling what

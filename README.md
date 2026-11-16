@@ -126,8 +126,10 @@ by default the current step and the five after it); «Download» gives a zip
 of PNGs named by those numbers (`00.png`, `07.png`, …), nothing else. Each
 step is drawn off-screen (`.visualizer-snapshot`) in the mode and with the
 options shown, at the visualizer's width, and all pictures of a zip have one
-size: the widest step's width, the tallest step's height, smaller steps
-filled with the background from the top left; pixel ratio 2, light colours.
+size: cropped to the widest step's content and a small margin (a course or
+exam.net scales a picture to its column), the tallest step's height, smaller
+steps filled with the background from the top left; pixel ratio 2, light
+colours. What is on one line in the step stays on one line in its picture.
 A picture shows the step's state and nothing that gives the order away: no
 arrows, no marking of what comes next, of what has just changed, of the
 current or the executed lines, no own background or sticky place for the
