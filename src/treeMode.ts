@@ -200,6 +200,13 @@ export function treeModeSteps(trace: TraceStep[], modeSteps: TraceStep[], nodeIn
       open.set(host.frameId, episode)
       steps.push(phaseStep(episode, step.step - 1, 'open', step))
     }
+    // A call about to start shows nothing new in a tree: the tree draws the
+    // call's box when the call starts (from the frames open at a step, not
+    // the pending one), so this step looked exactly like the one before
+    // (P69). It gets no step of its own. (After a tree's open step, which
+    // shows the state before its statement, the last line before it greyed
+    // as executed here; now it does so with the call's box.)
+    if (episode && step.kind === 'call-pending') continue
     steps.push(step)
     if (!episode) continue
     if (step.kind === 'call-enter') episode.expansions.push(step.step)

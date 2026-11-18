@@ -2,8 +2,9 @@
 // traces of the real runtime (CPython runs src/runtime/, as test:runtime
 // does):
 // - its steps are exactly the substitution mode's (the same objects, in the
-//   same order), plus one step that opens each expression's tree and one
-//   that closes it - for 2 + 3 * 4, (2 + 3) * 4, quadrat(2 + 1) with a
+//   same order) - but for a pending call's step inside a tree, which shows
+//   nothing new there (P69) - plus one step that opens each expression's
+//   tree and one that closes it - for 2 + 3 * 4, (2 + 3) * 4, quadrat(2 + 1) with a
 //   short-form quadrat, and a call with local variables;
 // - each tree's labels are Python's (no parentheses: the two first examples
 //   differ only in shape), and its text step by step is the evaluation
@@ -12,7 +13,9 @@
 //   inline call by its return expression's tree lays it out afresh.
 // - P65: the same in «Kasten» (the trace's own steps, no call inline): a
 //   one-line `return` call is a box in the tree, with the box one step early
-//   (call-pending) as for any other call, and the box's return expression a
+//   (P69: no step of its own for it - the tree draws the box when the call
+//   starts, so a call-pending step looked exactly like the one before; the
+//   box's return expression a
 //   tree of its own; a deep chain of such calls stays one chain of boxes.
 //
 //   npm run test:tree
@@ -84,14 +87,18 @@ for (const { mode, inlineCalls, stepsOf } of modes) for (const [name, result] of
   result[inlineCalls ? 'steps' : 'stepsBox'] = steps
 
   check(`${mode}, ${name}: the trees are «${mode}» plus open and close`, () => {
-    assert.deepEqual(steps.filter((step) => !step.treePhase), substitution)
+    // Without the steps of pending calls in a tree (P69), which showed
+    // nothing new there.
+    const kept = steps.filter((step) => !step.treePhase)
+    assert.deepEqual(kept, substitution.filter((step) => kept.includes(step)))
+    assert.deepEqual(substitution.filter((step) => !kept.includes(step)).map((step) => step.kind).filter((kind) => kind !== 'call-pending'), [], 'only pending calls left out')
     // Every tree opens right before a step of its own and closes after it.
     for (const episode of episodes) {
       assert.equal(steps[episode.openIndex].treePhase, 'open')
       assert.equal(steps[episode.closeIndex].treePhase, 'close')
       assert.ok(episode.closeIndex > episode.openIndex + 1, 'a tree without a step')
     }
-    assert.equal(steps.length, substitution.length + 2 * episodes.length)
+    assert.equal(steps.length, kept.length + 2 * episodes.length)
   })
 
   check(`${mode}, ${name}: a reduction moves no node`, () => {
@@ -143,7 +150,7 @@ check('quadrat(2 + 1): the call replaced by the tree of its body', () => {
   assert.deepEqual(texts('shortForm'), chain('shortForm'))
 })
 check('notenschnitt([4, 5, 4.5]): a box below the tree, its lines with trees of their own', () => {
-  assert.deepEqual(pattern('locals'), ['exec', 'open', 'call-pending', 'enter notenschnitt', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'eval', 'close', 'eval', 'close'])
+  assert.deepEqual(pattern('locals'), ['exec', 'open', 'enter notenschnitt', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'close', 'exec', 'open', 'eval', 'eval', 'eval', 'close', 'eval', 'close'])
   const outer = results.locals.shown[0]
   assert.equal(describeTree(outer[0].tree), 'notenschnitt(noten:[4, 5, 4.5])')
   assert.ok(outer.some((built) => built.boxes.some((frame) => frame.funcName === 'notenschnitt')), 'the box of notenschnitt')
@@ -193,13 +200,11 @@ check('the → chain export: the whole statement, wherever the scrubber is in it
 const patternBox = (name) => results[name].stepsBox.map(describeStep)
 const shapesBox = (name, episode = 0) => results[name].shownBox[episode].map((built) => describeTree(built.tree)).filter((text, index, all) => index === 0 || text !== all[index - 1])
 const textsBox = (name, episode = 0) => results[name].shownBox[episode].map((built) => built.text).filter((text, index, all) => index === 0 || text !== all[index - 1])
-check('Kasten, quadrat(2 + 1): a one-line return is a box in the tree, announced one step early', () => {
+check('Kasten, quadrat(2 + 1): a one-line return is a box in the tree', () => {
   const steps = patternBox('shortForm')
-  assert.deepEqual(steps.slice(0, 5), ['exec', 'open', 'eval', 'call-pending', 'enter quadrat'], 'the box one step early, as for any call')
+  assert.deepEqual(steps.slice(0, 4), ['exec', 'open', 'eval', 'enter quadrat'], 'no step for the pending call (P69): the box comes when the call starts')
   assert.deepEqual(shapesBox('shortForm'), ['quadrat(x:+(2, 1))', 'quadrat(x:3)', 'BOX', '9'], 'the call stays a box; never its body\'s tree in the caller\'s')
-  const pending = results.shortForm.stepsBox.find((step) => step.kind === 'call-pending')
   const outer = results.shortForm.episodesBox[0]
-  assert.ok(outer.shownSteps.includes(pending.step), 'the pending step belongs to the caller\'s tree')
   const enter = results.shortForm.trace.find((step) => step.kind === 'call-enter')
   const close = results.shortForm.trace.find((step) => step.closesFrameId === enter.frameId)
   assert.ok(outer.expansions.includes(enter.step) && outer.expansions.includes(close.step), 'laid out again where the box opens and closes')
@@ -235,6 +240,14 @@ check('Kasten, summe(9): ten one-line calls, one chain of boxes, each with its t
 })
 check('Ersetzung, summe(9): as before P65, inline, one tree', () => {
   assert.equal(results.deep.episodes.length, 1)
+})
+check('P69: no step for a pending call inside a tree, in either mode', () => {
+  for (const [name, result] of Object.entries(results)) {
+    for (const [steps, episodes] of [[result.steps, result.episodes], [result.stepsBox, result.episodesBox]]) {
+      const inside = steps.filter((step, index) => step.kind === 'call-pending' && episodes.some((episode) => episode.openIndex < index && index < episode.closeIndex))
+      assert.deepEqual(inside.map((step) => step.step), [], `${name}: a pending call's step inside a tree`)
+    }
+  }
 })
 
 if (failed > 0) process.exit(1)

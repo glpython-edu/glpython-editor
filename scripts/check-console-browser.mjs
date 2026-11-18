@@ -1494,6 +1494,76 @@ try {
     }
     await page.close()
   }
+  // P69: with trees, every step shows something new. A pending call's step
+  // inside a tree looked exactly like the one before (the tree draws the
+  // call's box when the call starts). Etappe 4's tree cases: slide 6
+  // (x = 2 + 3 * 4) and slide 7's evaluator with berechnen("1 + 2") and
+  // berechnen("2 + 3"), in «Ersetzung» and «Kasten». A step's look: the
+  // canvas's markup without inline styles, without the spans of the syntax
+  // colours (Monaco colours at no fixed step) and without leftovers of
+  // animations.
+  {
+    const evaluator = 'from parser import parse, ist_liste\n\ndef ist_ausgewertet(baum):\n    if ist_liste(baum):\n        return False\n    else:\n        return True\n\ndef operator_anwenden(op, x, y):\n    if op == "+":\n        return x + y\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], baum[1], baum[2])\n\ndef berechnen(text):\n    return auswerten(parse(text))\n'
+    const parser = 'def parse(text):\n    links, op, rechts = text.split()\n    return [op, int(links), int(rechts)]\n\ndef ist_liste(wert):\n    return type(wert) == list\n'
+    const look = (html) => {
+      const kept = []
+      let out = ''
+      for (const part of html.split(/(<\/?span[^>]*>)/)) {
+        if (part.startsWith('</span')) { if (kept.pop()) out += part; continue }
+        if (part.startsWith('<span')) { const keep = !/^<span(?: class="(?:py-tok-[^"]*)?")?>$/.test(part); kept.push(keep); if (keep) out += part; continue }
+        out += part
+      }
+      return out
+    }
+    for (const [name, files] of [
+      ['slide 6', [{ path: 'main.py', source: 'x = 2 + 3 * 4\n' }]],
+      ['berechnen("1 + 2")', [{ path: 'main.py', source: `${evaluator}\nberechnen("1 + 2")\n` }, { path: 'parser.py', source: parser }]],
+      ['berechnen("2 + 3")', [{ path: 'main.py', source: `${evaluator}\nberechnen("2 + 3")\n` }, { path: 'parser.py', source: parser }]],
+    ]) for (const mode of ['Ersetzung', 'Kasten']) {
+      const label = `trees: no step looks like the one before (${name}, «${mode}»)`
+      const page = await openEmbed({}, '?features=visualize,listtree,tree&cap=900')
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+        await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+        await showView(frame, mode === 'Kasten' ? 'Kasten mit Bäumen' : 'Baum')
+        await frame.getByRole('button', { name: 'Optionen' }).click()
+        const animate = frame.getByRole('menuitemcheckbox', { name: 'Schritte animieren' })
+        if (await animate.getAttribute('aria-checked') === 'true') await animate.click()
+        await animate.press('Escape')
+        if (await frame.getByRole('button', { name: 'Erster Schritt' }).isEnabled()) await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+        const signature = () => frame.locator('.visualizer-view > .visualizer-canvas').evaluate((canvas) => {
+          const copy = canvas.cloneNode(true)
+          for (const element of copy.querySelectorAll('.value-tree-ghost, .visualizer-connectors')) element.remove()
+          for (const element of [copy, ...copy.querySelectorAll('*')]) element.removeAttribute('style')
+          return copy.innerHTML
+        })
+        const next = frame.getByRole('button', { name: 'Nächster Schritt' })
+        let before = null
+        const same = []
+        let count = 0
+        for (;;) {
+          // Once it settled: a tree's boxes are sized a render later.
+          let now = look(await signature())
+          for (let again = null; again !== now; ) { await page.waitForTimeout(120); again = now; now = look(await signature()) }
+          const step = await frame.locator('.visualizer-step-count').innerText()
+          if (before !== null && now === before.look) same.push(`${before.step} = ${step}`)
+          before = { look: now, step }
+          count += 1
+          if (!(await next.isEnabled())) break
+          await next.click()
+        }
+        assert.ok(count > 3, 'the steps')
+        assert.deepEqual(same, [], 'steps that look like the one before')
+        console.log(`${label}: ok (${count - 1} steps)`)
+      } catch (error) {
+        failed += 1
+        console.error(`${label}: ${error.message}`)
+      }
+      await page.close()
+    }
+  }
   // P72: the space below the code (the steady height's reserve) holds still
   // where scrollbars take room (Windows; on macOS they float). The reserve
   // made the view scroll, its scrollbar made the canvas narrower, and that
