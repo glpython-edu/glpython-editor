@@ -747,6 +747,54 @@ keywords as keywords (not builtins such as `print` or `type`), `True`,
 `False` and `None` as values, and comments after code. The visualizer
 highlights code with the same language.
 
+## Werkzeuge für die Kursentwicklung
+
+Two scripts let whoever writes course material, a person or an agent, get the
+visualizer's → chain and its step pictures without sitting at the IDE.
+
+They open the deployed glpython IDE in headless Chrome, run the file, enter the
+call in the REPL and visualize it, as a learner does. So they show what learners
+see. They need Google Chrome installed and this repo's `npm install`
+(`playwright-core`), but no build, and they leave the working tree alone.
+
+Paths are relative to the folder you call from. `--silent` keeps npm's own
+lines out of the output.
+
+```bash
+npm --silent --prefix ../glpython-editor run chain -- --file funktionen.py --call "differenz(2 + 1, dreifach(1))" --visible
+npm --silent --prefix ../glpython-editor run step-images -- --file auswerter.py --lib parser.py --call "auswerten(['-', 7, 2])" --mode box --list
+npm --silent --prefix ../glpython-editor run step-images -- --file auswerter.py --lib parser.py --call "auswerten(['-', 7, 2])" --mode box --from 3 --to 7 --out bilder.zip
+```
+
+- **`chain`** prints the chain exactly as «→ Kette kopieren» copies it, comments
+  included.
+  - With `--visible`, it then prints each step's number and the text the
+    visualizer draws on the call's line.
+  - A call box shows as `[f(x=1): return …]` and an open tree as
+    `[Baum: root / children / …]`.
+  - Every drawn text without a box or a tree must be a line of the chain, in
+    the chain's order. A step that isn't is marked `≠`, and the exit code is 1.
+- **`step-images`** makes the zip with the IDE's own «Schritte als Bilder …»:
+  the same pictures, names (`00.png`, …), size and pixel ratio as by hand.
+  - With `--list`, it prints the counter's step numbers and each step's text
+    instead, to pick a range.
+- **Both take these options:**
+  - `--mode box|substitution` (default `substitution`);
+  - `--trees` for «Ausdrücke als Bäume auswerten»;
+  - `--lib <file.py>`, repeatable, for a library such as the course's
+    `parser.py` (read-only, as in a course link);
+  - `--ide live|dev` (default `live`): `https://glpython-edu.github.io/` or its
+    `/dev/`.
+- **Output and exit codes:**
+  - The IDE's version (its `version.json`) goes to stderr.
+  - A Python error in the file or in the call is printed as the IDE shows it,
+    with exit code 1.
+  - A wrong option, or a feature the chosen IDE doesn't have yet (e.g.
+    `step-images` on `live` before P68 is promoted), is a message with exit
+    code 2.
+  - `GLPYTHON_IDE_URL` points them at another IDE, e.g. a local `vite preview`
+    of an IDE build.
+
 ## Development
 
 ```bash
