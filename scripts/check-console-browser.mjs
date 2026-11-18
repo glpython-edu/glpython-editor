@@ -1033,11 +1033,13 @@ try {
       if (await button.isEnabled()) await button.click()
       return Number((await stepCount()).match(/von (\d+)/)[1])
     }
-    for (const [label, source, ersetzung, trees, texts] of [
-      ['2 + 3 * 4', 'x = 2 + 3 * 4\n', 3, 1, ['2 + 3 * 4', '2 + 12', '14']],
-      ['(2 + 3) * 4', 'x = (2 + 3) * 4\n', 3, 1, ['(2 + 3) * 4', '5 * 4', '20']],
-      ['quadrat(2 + 1)', 'def quadrat(x):\n    return x * x\n\ny = quadrat(2 + 1)\n', 5, 1, ['quadrat(2 + 1)', 'quadrat(3)', '3 * 3', '9']],
-      ['notenschnitt([4, 5, 4.5])', notenschnitt, 13, 4, null],
+    // `pending`: calls about to start inside a tree, which have no step of
+    // their own there (P69).
+    for (const [label, source, ersetzung, trees, texts, pending] of [
+      ['2 + 3 * 4', 'x = 2 + 3 * 4\n', 3, 1, ['2 + 3 * 4', '2 + 12', '14'], 0],
+      ['(2 + 3) * 4', 'x = (2 + 3) * 4\n', 3, 1, ['(2 + 3) * 4', '5 * 4', '20'], 0],
+      ['quadrat(2 + 1)', 'def quadrat(x):\n    return x * x\n\ny = quadrat(2 + 1)\n', 5, 1, ['quadrat(2 + 1)', 'quadrat(3)', '3 * 3', '9'], 0],
+      ['notenschnitt([4, 5, 4.5])', notenschnitt, 13, 4, null, 1],
     ]) {
       try {
         await page.evaluate((program) => window.send('visualize', program), source)
@@ -1047,7 +1049,7 @@ try {
         assert.equal(await lastStep(), ersetzung, 'the steps of «Ersetzung»')
         await mode('Baum')
         await measured(frame)
-        assert.equal(await lastStep(), ersetzung + 2 * trees, '«Ersetzung» plus open and close')
+        assert.equal(await lastStep(), ersetzung + 2 * trees - pending, '«Ersetzung» plus open and close, without pending calls')
         await frame.locator('.visualizer-controls button').nth(0).click()
         const state = () => frame.locator('.embed-app').evaluate((app) => {
           const tree = app.querySelector('.visualizer-canvas > .frame-box > .frame-code .value-tree-scroll')
