@@ -500,7 +500,12 @@ function buildLineSegments(
   // nested component with no text span to attach a class to, so they're
   // carved out (and the whole range is skipped if it sits entirely inside
   // one, via the insideChild check below).
-  const existingMarks = marks.slice()
+  // In the line's order: the walk below moves `cursor` forward only, and
+  // `marks` holds the substituted values first, then the children. In that
+  // order a value after a child ("dreifach(3) - 3": the child, then "3")
+  // moved the cursor past the child, and the text in front of the value was
+  // marked again, the child's call site with it ("9dreifach(3) - 3", P70).
+  const existingMarks = marks.slice().sort((a, b) => a.start - b.start)
   for (const r of nextStepRanges) {
     if (insideChild(r.start, r.end)) continue
     const start = Math.max(r.start, lineStart) - lineStart

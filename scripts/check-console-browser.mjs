@@ -1703,6 +1703,89 @@ try {
     }
     await page.close()
   }
+  // P70: a call shown inline whose step comes after a step of the
+  // expression around it, with a substituted value after the call: the
+  // marking of the next step drew the call site's old text again next to
+  // the call's value ("9dreifach(3) - 3" for "9 - 3"; "max(dreifach(1),
+  // 3, 2)" for "max(3, 2)"). Every step's text is the → chain's, in
+  // «Ersetzung»; the copied chain too; and «Kasten» step by step.
+  {
+    const label = 'P70: each step reads as the → chain'
+    let page
+    let frame
+    // The root line's text without its line number, once it settled (a
+    // step's animations add nothing to the text, but a render may lag).
+    const rootText = () => frame.locator('.visualizer-canvas > .frame-box > .frame-code').first().innerText().then((text) => text.replace(/^1\n/, ''))
+    const stepTexts = async (mode) => {
+      await frame.locator('.visualizer-mode button', { hasText: mode }).click()
+      const first = frame.locator('.visualizer-controls button').nth(0)
+      if (await first.isEnabled()) await first.click()
+      const next = frame.locator('.visualizer-controls button').nth(2)
+      const texts = []
+      for (;;) {
+        await page.waitForTimeout(300)
+        texts.push(await rootText())
+        if (!(await next.isEnabled())) return texts
+        await next.click()
+      }
+    }
+    const dreifach = 'def dreifach(x):\n    return 3 * x\n\n'
+    const cases = [
+      // The instructor's case (Etappe 6a, A2): dreifach(3) the left operand
+      // of the body that replaced differenz(3, 3).
+      [`${dreifach}def differenz(a, b):\n    return dreifach(a) - b\n`, 'differenz(2 + 1, dreifach(1))', ['differenz(3, dreifach(1))', 'differenz(3, 3 * 1)', 'differenz(3, 3)', 'dreifach(3) - 3', '(3 * 3) - 3', '9 - 3', '6']],
+      // One level deeper, in parentheses.
+      [`${dreifach}def differenz(a, b):\n    return dreifach(a) - b\n\ndef aussen(a, b):\n    return differenz(a, b) * b\n`, 'aussen(3, 2)', ['differenz(3, 2) * 2', '(dreifach(3) - 2) * 2', '((3 * 3) - 2) * 2', '(9 - 2) * 2', '7 * 2', '14']],
+      // An argument of a built-in's call, and a call as an argument.
+      [`${dreifach}def differenz(a, b):\n    return max(dreifach(a), b)\n`, 'differenz(1, 2)', ['max(dreifach(1), 2)', 'max(3 * 1, 2)', 'max(3, 2)', '3']],
+      [`${dreifach}def differenz(a, b):\n    return dreifach(dreifach(a)) - b\n`, 'differenz(1, 2)', ['dreifach(dreifach(1)) - 2', 'dreifach(3 * 1) - 2', 'dreifach(3) - 2', '(3 * 3) - 2', '9 - 2', '7']],
+    ]
+    try {
+      for (const [index, [source, input, chain]] of cases.entries()) {
+        // A page of its own: the console of the last call would already
+        // show the "(Keine Ausgabe)" this waits for.
+        await page?.close()
+        page = await openEmbed({}, '?features=run,repl,visualize,export')
+        frame = page.frameLocator('#embed')
+        await page.evaluate((code) => window.send('run', code), source)
+        await frame.locator('.console').getByText('(Keine Ausgabe)').waitFor({ timeout: 60000 })
+        await enterRepl(frame, input)
+        const entry = frame.locator('.repl-entry').last()
+        await entry.locator('.repl-entry-visualize:not([disabled])').waitFor({ timeout: 30000 })
+        await entry.locator('.repl-entry-visualize').click()
+        await frame.locator('.visualizer-step-count', { hasText: 'Vor der' }).waitFor({ timeout: 60000 })
+        assert.deepEqual(await stepTexts('Ersetzung'), [input, ...chain], `${input}: «Ersetzung»'s steps`)
+        // At the last step, the chain of the whole input.
+        await frame.locator(':root').evaluate(() => { navigator.clipboard.writeText = async (text) => { window.copied = text } })
+        await frame.getByRole('button', { name: 'Optionen' }).click()
+        await frame.getByRole('menuitem', { name: '→-Kette kopieren' }).click()
+        await frame.getByRole('menuitem', { name: 'Kopiert' }).waitFor({ timeout: 5000 })
+        await frame.getByRole('menuitem', { name: 'Kopiert' }).press('Escape')
+        assert.equal(await frame.locator(':root').evaluate(() => window.copied), [input, ...chain].join('\n→ '), `${input}: the copied chain`)
+        if (index === 0) {
+          // «Kasten»: each call a box; the root line, boxes and their
+          // variables included, never the call site's text next to a value.
+          const box = (header, body, vars) => `def ${header}:\n    return ${body}\n${vars}`
+          const dreifachBox = (x, body, shown) => box(`dreifach(x=${x})`, body, `x\n${shown}\n`)
+          const differenzBox = (body, shown = '3\nb\n3') => box('differenz(a=3, b=3)', body, `a\n${shown}`)
+          assert.deepEqual(await stepTexts('Kasten'), [
+            input, 'differenz(3, dreifach(1))',
+            `differenz(3, \n${dreifachBox(1, '3 * x', '…')})`, `differenz(3, \n${dreifachBox(1, '3 * x', '1')})`, `differenz(3, \n${dreifachBox(1, '3 * 1', '1')})`, `differenz(3, \n${dreifachBox(1, '3', '1')})`,
+            'differenz(3, 3)',
+            differenzBox('dreifach(a) - b', '…\nb\n…'), differenzBox('dreifach(a) - b'), differenzBox('dreifach(3) - b'),
+            differenzBox(`\n${dreifachBox(3, '3 * x', '…')} - b`), differenzBox(`\n${dreifachBox(3, '3 * x', '3')} - b`), differenzBox(`\n${dreifachBox(3, '3 * 3', '3')} - b`), differenzBox(`\n${dreifachBox(3, '9', '3')} - b`),
+            differenzBox('9 - b'), differenzBox('9 - 3'), differenzBox('6'),
+            '6',
+          ], `${input}: «Kasten»'s steps`)
+        }
+      }
+      console.log(`${label}: ok (${cases.length} calls)`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page?.close()
+  }
   // P49: a call of the learner's own function that returns None shows None
   // as its last step - a line of the program, a REPL input, a failing
   // doctest example - in each mode; print(...) and xs.append(...) keep their
