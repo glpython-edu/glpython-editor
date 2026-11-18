@@ -1807,6 +1807,94 @@ try {
       await page.close()
     }
   })
+  // P68d: a step whose tree holds a call's box is whole in its picture, as
+  // on screen. In the layer the pictures are drawn in, a step's frame was
+  // 0px wide, so a tree (whose room is its view's width) got its least,
+  // scrolled and was cut off. The trees' leaves are coloured green, the
+  // hints at a tree's hidden edges magenta: no picture shows a hint, and at
+  // every step the leaves span as wide in the picture as on screen (at
+  // least 80%, less a glyph's sides: a picture starts each tree afresh,
+  // where on screen a box in a tree keeps the size it grew to at an earlier
+  // step).
+  await testCase('p68d-step-images-trees', async () => {
+    const label = 'steps as images: trees whole, as on screen'
+    const evaluator = 'from parser import parse, ist_liste\n\ndef ist_ausgewertet(baum):\n    if ist_liste(baum):\n        return False\n    else:\n        return True\n\ndef operator_anwenden(op, x, y):\n    if op == "+":\n        return x + y\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], baum[1], baum[2])\n\ndef berechnen(text):\n    return auswerten(parse(text))\n\nberechnen("2 + 3")\n'
+    const parser = 'def parse(text):\n    links, op, rechts = text.split()\n    return [op, int(links), int(rechts)]\n\ndef ist_liste(wert):\n    return type(wert) == list\n'
+    const files = [{ path: 'main.py', source: evaluator }, { path: 'parser.py', source: parser }]
+    const page = await openEmbed({}, '?features=visualize,listtree,tree,stepimages&cap=900')
+    const frame = page.frameLocator('#embed')
+    try {
+      await page.evaluate((files) => document.querySelector('#embed').contentWindow.postMessage({ type: 'glpython:visualize', version: 4, source: files[0].source, files, mainFile: 'main.py', mode: 'eval' }, location.origin), files)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await frame.locator('head').evaluate((head) => { const style = document.createElement('style'); style.textContent = '.value-tree-leaf { color: #00FF00 !important } .value-tree-hint { color: #FF00FF !important; background: #FF00FF !important; opacity: 1 !important }'; head.append(style) })
+      await showView(frame, 'Baum')
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const animate = frame.getByRole('menuitemcheckbox', { name: 'Schritte animieren' })
+      if (await animate.getAttribute('aria-checked') === 'true') await animate.click()
+      await animate.press('Escape')
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const total = Number((await frame.locator('.visualizer-step-count').innerText()).match(/von (\d+)/)[1])
+      await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+      // Per step, where the leaves' text is, and whether a tree holds a box.
+      const places = []
+      for (let number = 0; number <= total; number += 1) {
+        if (number > 0) await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+        await page.waitForTimeout(150)
+        places.push(await frame.locator('.visualizer-canvas').first().evaluate((canvas) => {
+          const origin = canvas.getBoundingClientRect()
+          // The leaves' text, as the picture's green pixels are only that.
+          const range = document.createRange()
+          return { box: canvas.querySelector('.value-tree-box') !== null, leaves: [...canvas.querySelectorAll('.value-tree-leaf:not(.value-tree-ghost)')].map((leaf) => { range.selectNodeContents(leaf); const box = range.getBoundingClientRect(); return { text: leaf.textContent, left: box.left - origin.left, right: box.right - origin.left } }) }
+        }))
+      }
+      assert.ok(places.some((place) => place.box && place.leaves.length > 1), 'a step whose tree holds a call\'s box')
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).click()
+      const dialog = frame.getByRole('dialog', { name: 'Schritte als Bilder' })
+      await dialog.getByLabel('Von Schritt').fill('0')
+      await dialog.getByLabel('bis Schritt').fill(String(total))
+      const downloading = page.waitForEvent('download', { timeout: 120000 })
+      await dialog.getByRole('button', { name: 'Herunterladen' }).click()
+      const download = await downloading
+      const { unzipSync } = await import('fflate')
+      const zipped = unzipSync(new Uint8Array(await readFile(await download.path())))
+      const names = Object.keys(zipped)
+      assert.equal(names.length, total + 1, 'one picture per step')
+      const results = await page.evaluate(async ({ pngs, places }) => {
+        const result = []
+        for (const [index, base64] of pngs.entries()) {
+          const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: 'image/png' }))
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+          const context = canvas.getContext('2d')
+          context.drawImage(bitmap, 0, 0)
+          const { data, width, height } = context.getImageData(0, 0, bitmap.width, bitmap.height)
+          let magenta = 0
+          let left = Infinity
+          let right = -Infinity
+          for (let y = 0; y < height; y += 1) {
+            for (let x = 0; x < width; x += 1) {
+              const at = (y * width + x) * 4
+              if (data[at] > 200 && data[at + 2] > 200 && data[at + 1] < 60) magenta += 1
+              if (data[at + 1] > 170 && data[at] < 90 && data[at + 2] < 90) { left = Math.min(left, x); right = Math.max(right, x) }
+            }
+          }
+          const leaves = places[index].leaves
+          const span = leaves.length > 0 ? (Math.max(...leaves.map((leaf) => leaf.right)) - Math.min(...leaves.map((leaf) => leaf.left))) * 2 : 0
+          result.push({ magenta, span, drawn: right >= left ? right - left : 0 })
+        }
+        return result
+      }, { pngs: names.map((name) => Buffer.from(zipped[name]).toString('base64')), places })
+      results.forEach(({ magenta, span, drawn }, index) => {
+        assert.equal(magenta, 0, `${names[index]}: no hint at a hidden edge${places[index].box ? ' (a tree with a box)' : ''}`)
+        assert.ok(drawn >= span * 0.8 - 6, `${names[index]}: the leaves span ${drawn}px in the picture, ${Math.round(span)}px on screen${places[index].box ? ' (a tree with a box)' : ''}`)
+      })
+      console.log(`${label}: ok (${names.length} pictures, ${places.filter((place) => place.box).length} with a box in a tree)`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  })
   await testCase('p68b-step-images-rows', async () => {
     // P68b: a value in a call box's variable row lands in its row in the
     // picture, as on screen - strings too ('+' broke after every character
