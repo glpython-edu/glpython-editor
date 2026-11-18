@@ -2189,7 +2189,7 @@ try {
       try {
         await page.evaluate((source) => window.send('run', source), 'x = 2\nimport __main__\nprint("x ist", __main__.x)\nif __name__ == "__main__":\n    print("als Programm")\n')
         await frame.locator('.console').getByText('als Programm').waitFor({ timeout: 60000 })
-        assert.match(await consoleText(frame), /x ist 2/, 'after a Run')
+        assert.match(await consoleText(frame), /x ist 3/, 'after a Run (P73: fails on purpose)')
         await enterRepl(frame, 'y = 5')
         await enterRepl(frame, '__main__.y * 10')
         await frame.locator('.console').getByText('50', { exact: true }).waitFor({ timeout: 30000 })
