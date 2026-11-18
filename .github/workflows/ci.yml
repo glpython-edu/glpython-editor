@@ -10,8 +10,12 @@ on:
 permissions:
   contents: read
 
+# The browser checks (test:console) take most of the time, so they run in
+# parallel parts (P73): `checks` runs everything else, `console` the parts,
+# and `check` - the name the branches' rulesets require - passes only when
+# all of them passed.
 jobs:
-  check:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,14 +46,43 @@ jobs:
       # The trees' layout (our port of van der Ploeg's algorithm) against
       # d3-flextree, on the course's trees and random ones.
       - run: npm run test:layout
-      # The visualizer's mode «Baum» on traces of the runtime: its steps are
-      # «Ersetzung»'s plus open and close, its text the chain's, and a
-      # reduction moves no node.
+      # The visualizer's trees on traces of the runtime: their steps are the
+      # mode's plus open and close, their text the chain's, and a reduction
+      # moves no node.
       - run: npm run test:tree
-      # The console in Chrome (on the runner) with Pyodide from its CDN,
-      # driving the embed built above: Tests → edit → Tests shows the new
-      # report (P20).
-      - run: npm run test:console
       - name: Not checked here
         run: |
           echo "::notice title=Not run in CI::Needs Pyodide in a browser, so apart from test:console it isn't checked here: the worker (run, REPL, input() bridge, gturtle) and the UI. Check these in the embed preview (npm run build:embed && npm run preview:embed)."
+
+  # The console and the visualizer in Chrome (on the runner) with Pyodide
+  # from its CDN, driving the embed built here: every case of test:console,
+  # in four parts (scripts/console-shards.json; the count here and there
+  # must agree). Each part builds the embed itself: that takes seconds,
+  # less than handing a build over as an artifact.
+  console:
+    name: console ${{ matrix.shard }}/4
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:embed
+      - run: npm run test:console -- --shard ${{ matrix.shard }}/4
+
+  check:
+    needs: [checks, console]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks and every part of test:console passed
+        run: |
+          echo "checks: ${{ needs.checks.result }}, test:console: ${{ needs.console.result }}"
+          test "${{ needs.checks.result }}" = success
+          test "${{ needs.console.result }}" = success
