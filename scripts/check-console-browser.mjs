@@ -2239,7 +2239,7 @@ console.log(`\n${shardLabel}: ${timings.length} cases, ${(timings.reduce((sum, [
 for (const [name, ms] of timings) console.log(`  ${(ms / 1000).toFixed(1).padStart(6)} s  ${name}`)
 if (failures.length > 0) {
   console.error(`${shardLabel}: failed: ${failures.join(', ')}`)
-  if (process.env.GITHUB_ACTIONS) for (const name of failures) console.log(`::error title=test:console, ${shardLabel}::${name} failed (see the log above)`)
+  if (process.env.GITHUB_ACTIONS) for (const name of failures) console.log(`::error title=test:console ${shardLabel}::${name} failed (see the log above)`)
 }
 if (failed > 0) process.exit(1)
 console.log(`jsDelivr: ${cdn.size} files fetched once, ${served - cdn.size} requests served from memory.`)
