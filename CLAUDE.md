@@ -26,6 +26,8 @@ npm run test:layout    # the trees' layout (src/treeLayout.ts) against d3-flextr
 npm run test:tree      # the visualizer's trees (src/treeMode.ts), in «Ersetzung» and «Kasten», on traces of the runtime under CPython
 npm run test:svg       # the static tree pictures (src/treeSvg.ts, bin/glpython-tree.mjs) against scripts/tree-svg/ (-- --update after a deliberate change)
 npm run build:embed    # builds the iframe app + demo page into dist-embed/ (plus embed/public/: coi-serviceworker.js)
+npm run chain -- --file f.py --call "f(1)" [--visible]   # the → chain from the deployed IDE (scripts/course/, P71; README «Werkzeuge für die Kursentwicklung»)
+npm run step-images -- --file f.py --call "f(1)" (--list | --from 0 --to 5 --out x.zip)   # «Schritte als Bilder …» from the deployed IDE
 npm run preview:embed  # serves dist-embed/ with COOP/COEP headers; open /demo.html
 ```
 
