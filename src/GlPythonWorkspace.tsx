@@ -2901,12 +2901,19 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     let width = -1
     steadyHeightRef.current = 0
     canvas.style.minHeight = ''
+    // A new width of the view starts again, not the view's own scrollbar:
+    // where scrollbars take room (Windows), the height kept here made the
+    // view scroll, its scrollbar made the canvas narrower, which started
+    // the measuring again without that height, the scrollbar went, and so
+    // on - the space below the code jumped by lines at the first and last
+    // step (P72). The view's offsetWidth includes its scrollbar.
+    const viewWidth = () => canvas.parentElement?.offsetWidth ?? canvas.offsetWidth
     const observer = new ResizeObserver(() => {
-      if (canvas.offsetWidth !== width) {
-        width = canvas.offsetWidth
+      if (viewWidth() !== width) {
+        width = viewWidth()
         steadyHeightRef.current = 0
         canvas.style.minHeight = ''
-        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: effectiveMode, width, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
+        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: effectiveMode, width: canvas.offsetWidth, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
       }
       raiseSteadyHeight(canvas.offsetHeight)
     })
