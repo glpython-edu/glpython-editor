@@ -1,9 +1,9 @@
 // The visualizer's steps as pictures (P68), for exercises in which learners
 // put a few steps back in order: the workspace draws each step of a range
 // off-screen (`.visualizer-snapshot` in style.css, which leaves out what
-// gives the order away: the marking of what comes next, what has just
-// changed, the current and the executed lines, the current box's own
-// variable row, animations; arrows, step bar, footer and console aren't
+// gives the order away: what has just changed, the current and the
+// executed lines, the current box's own variable row, animations; the
+// marking of what comes next, arrows, step bar, footer and console aren't
 // drawn there at all), and this turns them into PNGs of one size and zips
 // them as 00.png (before the start), 01.png, … - the step counter's numbers.
 // html-to-image and fflate are loaded on the first click only.

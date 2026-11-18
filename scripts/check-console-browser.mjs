@@ -1494,6 +1494,95 @@ try {
     }
     await page.close()
   }
+  // P68c: the code of the next step keeps its syntax colours in the
+  // pictures (it was drawn plain inside the marking, which gave the next
+  // step away: in "baum[0], baum[1], baum[2]" the 0 black, 1 and 2 teal).
+  // The syntax colours are set to pure red (keywords), blue (strings) and
+  // green (numbers); at every step where the next step's area holds a
+  // keyword, a string or a number of the code (not a substituted value,
+  // which is plain anywhere), the picture shows that colour in that area.
+  {
+    const label = 'steps as images: the next step\'s code keeps its colours'
+    const source = 'def ist_liste(wert):\n    return type(wert) == list\n\n\ndef ist_ausgewertet(baum):\n    if ist_liste(baum):\n        return False\n    else:\n        return True\n\n\ndef operator_anwenden(op, x, y):\n    if op == "+":\n        return x + y\n    if op == "-":\n        return x - y\n    if op == "*":\n        return x * y\n\n\ndef auswerten(baum):\n    if ist_ausgewertet(baum):\n        return baum\n    return operator_anwenden(baum[0], baum[1], baum[2])\n\n\nauswerten([\'-\', 7, 2])\n'
+    const page = await openEmbed({}, '?features=visualize,stepimages&visualizer=box&cap=900')
+    const frame = page.frameLocator('#embed')
+    const kinds = { keyword: /\b(if|elif|else|return|def|not|and|or|in|is)\b/, string: /(["']).*?\1/, number: /(^|[^\w.])\d+($|[^\w.])/ }
+    try {
+      await page.evaluate((source) => window.send('visualize', source), source)
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await frame.locator('head').evaluate((head) => { const style = document.createElement('style'); style.textContent = ':root { --glp-syntax-keyword: #FF0000 !important; --glp-syntax-string: #0000FF !important; --glp-syntax-number: #00FF00 !important }'; head.append(style) })
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      const animate = frame.getByRole('menuitemcheckbox', { name: 'Schritte animieren' })
+      if (await animate.getAttribute('aria-checked') === 'true') await animate.click()
+      await animate.press('Escape')
+      await frame.getByRole('button', { name: 'Letzter Schritt' }).click()
+      const total = Number((await frame.locator('.visualizer-step-count').innerText()).match(/von (\d+)/)[1])
+      await frame.getByRole('button', { name: 'Erster Schritt' }).click()
+      // Per step, the next step's areas (in the picture's coordinates: the
+      // canvas 12px below the view's top) and the code in them.
+      const areas = []
+      for (let number = 0; number <= total; number += 1) {
+        if (number > 0) await frame.getByRole('button', { name: 'Nächster Schritt' }).click()
+        areas.push(await frame.locator('.visualizer-canvas').evaluate((canvas) => {
+          const origin = canvas.getBoundingClientRect()
+          return [...canvas.querySelectorAll('.visual-next-step')].map((marked) => {
+            const code = marked.cloneNode(true)
+            for (const value of code.querySelectorAll('.visual-substituted-value, .visual-param-annotation, .visual-loop-annotation')) value.remove()
+            const box = marked.getBoundingClientRect()
+            return { code: marked.matches('.visual-substituted-value') ? '' : code.textContent, left: box.left - origin.left, right: box.right - origin.left, top: box.top - origin.top + 12, bottom: box.bottom - origin.top + 12 }
+          })
+        }))
+      }
+      const expected = areas.map((stepAreas) => stepAreas.map((area) => Object.entries(kinds).filter(([, pattern]) => pattern.test(area.code)).map(([kind]) => kind)))
+      for (const kind of Object.keys(kinds)) assert.ok(expected.flat(2).includes(kind), `a next step with a ${kind} in its code`)
+      await frame.getByRole('button', { name: 'Optionen' }).click()
+      await frame.getByRole('menuitem', { name: 'Schritte als Bilder …' }).click()
+      const dialog = frame.getByRole('dialog', { name: 'Schritte als Bilder' })
+      await dialog.getByLabel('Von Schritt').fill('0')
+      await dialog.getByLabel('bis Schritt').fill(String(total))
+      const downloading = page.waitForEvent('download', { timeout: 120000 })
+      await dialog.getByRole('button', { name: 'Herunterladen' }).click()
+      const download = await downloading
+      const { unzipSync } = await import('fflate')
+      const files = unzipSync(new Uint8Array(await readFile(await download.path())))
+      const names = Object.keys(files)
+      assert.equal(names.length, total + 1, 'one picture per step')
+      const found = await page.evaluate(async ({ pngs, areas }) => {
+        const colours = { keyword: (r, g, b) => r > 180 && g < 80 && b < 80, string: (r, g, b) => b > 170 && r < 80 && g < 80, number: (r, g, b) => g > 170 && r < 90 && b < 90 }
+        const result = []
+        for (const [index, base64] of pngs.entries()) {
+          const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: 'image/png' }))
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+          const context = canvas.getContext('2d')
+          context.drawImage(bitmap, 0, 0)
+          const { data, width } = context.getImageData(0, 0, bitmap.width, bitmap.height)
+          result.push(areas[index].map((area) => {
+            const kinds = new Set()
+            for (let y = Math.max(0, Math.floor(area.top * 2)); y < Math.min(bitmap.height, Math.ceil(area.bottom * 2)); y += 1) {
+              for (let x = Math.max(0, Math.floor(area.left * 2)); x < Math.min(width, Math.ceil(area.right * 2)); x += 1) {
+                const at = (y * width + x) * 4
+                for (const [kind, test] of Object.entries(colours)) if (test(data[at], data[at + 1], data[at + 2])) kinds.add(kind)
+              }
+            }
+            return [...kinds]
+          }))
+        }
+        return result
+      }, { pngs: names.map((name) => Buffer.from(files[name]).toString('base64')), areas })
+      let checked = 0
+      expected.forEach((stepKinds, index) => stepKinds.forEach((kinds, area) => {
+        for (const kind of kinds) {
+          checked += 1
+          assert.ok(found[index][area].includes(kind), `${names[index]}: the ${kind} in the next step's "${areas[index][area].code}" keeps its colour (found: ${found[index][area].join(', ') || 'none'})`)
+        }
+      }))
+      console.log(`${label}: ok (${names.length} pictures, ${checked} tokens in next steps)`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await page.close()
+  }
   // P68b: a value in a call box's variable row lands in its row in the
   // picture, as on screen - strings too ('+' broke after every character
   // and spilled below the row). The values are coloured blue; at each step
