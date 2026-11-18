@@ -3051,9 +3051,21 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     const isCancelled = () => stepImagesRun.current !== job.id
     const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const make = async () => {
-      // Two frames later: a tree's call box measures itself and is laid out
-      // again in a render of its own first (ExpressionTreeBox).
+      // Once the steps hold still: a tree's call box measures itself and is
+      // laid out again in a render of its own (ExpressionTreeBox), and with
+      // many steps drawn at once that took more than the two frames waited
+      // here before - the trees still scrolled, cut off, when the pictures
+      // were cropped and taken (P68d). Until the sizes of the steps and their
+      // trees stay the same for two frames, at most about two seconds.
+      const sizesNow = () => [...layer.querySelectorAll<HTMLElement>('[data-step-image], [data-step-image] .value-tree-scroll')].map((element) => `${element.scrollWidth}x${element.scrollHeight}/${element.clientWidth}`).join()
       await frames()
+      for (let tries = 0, before = sizesNow(); tries < 60; tries++) {
+        await frames()
+        if (isCancelled()) return
+        const now = sizesNow()
+        if (now === before) break
+        before = now
+      }
       if (isCancelled()) return
       const steps = [...layer.querySelectorAll<HTMLElement>('[data-step-image]')]
       for (const frame of steps) keepLinesWhole(frame)
@@ -3062,10 +3074,12 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       // column), the tallest step's height.
       const width = Math.ceil(Math.max(...steps.map(contentRight)) + STEP_IMAGE_MARGIN)
       const height = Math.ceil(Math.max(...steps.map((frame) => frame.offsetHeight)))
-      for (const frame of steps) {
-        frame.style.width = `${width}px`
-        frame.style.height = `${height}px`
-      }
+      // Cropped in the picture only: the frames keep the canvas's width
+      // (set where they are drawn, P68d: without it a frame here was 0px
+      // wide, and a tree - whose room is its view's width, ExpressionTreeBox
+      // - got its least, scrolled, and was cut off in its picture; narrowed
+      // here, it would lay itself out again in the narrower view).
+      for (const frame of steps) frame.style.height = `${height}px`
       const background = getComputedStyle(steps[0]).backgroundColor
       const zip = await zipStepImages(steps.map((frame) => ({ name: stepImageName(Number(frame.dataset.stepImage), job.to), frame })), {
         width,
@@ -3094,7 +3108,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     const view = stepViewAt(visualTrace.trace, visualTraceSteps, number - 1, astIndexByFile, substitutionMode, treeSteps?.episodes ?? null)
     const step = view.currentStep?.step ?? -1
     const access: FullValueAccess = { functions: visualTrace.functions, values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
-    return <div key={number} className="visualizer-frame" data-step-image={number}><div className="visualizer-view"><div className="visualizer-canvas" style={{ width: stepImagesJob.width || undefined }}><FullValueContext.Provider value={access}>{rootFrame(view, true)}</FullValueContext.Provider></div></div></div>
+    return <div key={number} className="visualizer-frame" data-step-image={number} style={{ width: stepImagesJob.width || undefined }}><div className="visualizer-view"><div className="visualizer-canvas" style={{ width: stepImagesJob.width || undefined }}><FullValueContext.Provider value={access}>{rootFrame(view, true)}</FullValueContext.Provider></div></div></div>
   })}</div> : null
   const stepImagesDialogNode = stepImagesDialog && isVisualizing ? <div className="input-dialog-backdrop" role="presentation" onClick={closeStepImages}><form className="input-dialog step-images-dialog" role="dialog" aria-modal="true" aria-label={t.stepImagesTitle ?? 'Steps as images'} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeStepImages() } }} onSubmit={(event) => { event.preventDefault(); startStepImages() }}><div className="input-dialog-heading"><span>{t.stepImagesTitle ?? 'Steps as images'}</span></div><div className="step-images-range"><label>{t.stepImagesFrom ?? 'From step'}<input ref={stepImagesFieldRef} className="input-dialog-field" type="number" min={0} max={stepCount} step={1} value={stepImagesDialog.from} disabled={stepImagesJob !== null} onChange={(event) => setStepImagesDialog((dialog) => dialog && { ...dialog, from: event.target.value })} /></label><label>{t.stepImagesTo ?? 'to step'}<input className="input-dialog-field" type="number" min={0} max={stepCount} step={1} value={stepImagesDialog.to} disabled={stepImagesJob !== null} onChange={(event) => setStepImagesDialog((dialog) => dialog && { ...dialog, to: event.target.value })} /></label></div><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={closeStepImages}>{t.stepImagesCancel ?? 'Cancel'}</button><button type="submit" className="run-button" disabled={!stepImagesRange || stepImagesJob !== null}>{stepImagesJob ? (t.stepImagesProgress?.(stepImagesJob.done, stepImagesJob.to - stepImagesJob.from + 1) ?? `${stepImagesJob.done} of ${stepImagesJob.to - stepImagesJob.from + 1} \u2026`) : stepImagesFailed ? (t.stepImagesFailed ?? 'The images could not be made') : (t.stepImagesDownload ?? 'Download')}</button></div></form></div> : null
 
