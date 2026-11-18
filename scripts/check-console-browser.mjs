@@ -1198,6 +1198,66 @@ try {
       await page.close()
     }
   }
+  // P72: the space below the code (the steady height's reserve) holds still
+  // where scrollbars take room (Windows; on macOS they float). The reserve
+  // made the view scroll, its scrollbar made the canvas narrower, and that
+  // started the measuring again without the reserve: the scrollbar went,
+  // the canvas widened, and the reserve came back - with the parent page
+  // following the embed's height, back and forth by several lines at the
+  // first and last step. A browser of its own shows scrollbars (the others
+  // hide them), styled at Windows' 17px; device pixel ratio 1.5 and a slow
+  // CPU, as on a school computer. Over 6 s after the visualization opens,
+  // the reserve never gets smaller while the view keeps its width (it was
+  // dropped and set anew within one callback: 313px became 180px and back,
+  // again and again). A new width of the view starts it anew, rightly: the
+  // embed's own page has a scrollbar while its iframe is still short.
+  {
+    const label = 'steady height: no back and forth with scrollbars that take room'
+    const barsBrowser = await chromium.launch({ channel: 'chrome', headless: true, ignoreDefaultArgs: ['--hide-scrollbars'] })
+    try {
+      const context = await barsBrowser.newContext({ viewport: { width: 800, height: 950 }, deviceScaleFactor: 1.5 })
+      await context.route('https://cdn.jsdelivr.net/**', async (route) => {
+        const url = route.request().url()
+        if (!cdn.has(url)) cdn.set(url, route.fetch().then(async (response) => ({ status: response.status(), headers: response.headers(), body: await response.body() })))
+        const file = await cdn.get(url)
+        await route.fulfill({ status: file.status, headers: Object.fromEntries(Object.entries(file.headers).filter(([name]) => name !== 'content-encoding' && name !== 'content-length')), body: file.body })
+      })
+      await context.addInitScript(() => {
+        const add = () => { const style = document.createElement('style'); style.textContent = '::-webkit-scrollbar { width: 17px; height: 17px; background: #f0f0f0 } ::-webkit-scrollbar-thumb { background: #c0c0c0 }'; document.head.append(style) }
+        if (document.head) add(); else document.addEventListener('DOMContentLoaded', add)
+      })
+      const page = await context.newPage()
+      await page.route((url) => url.pathname === '/check-console.html', (route) => route.fulfill({ contentType: 'text/html', body: harness }))
+      await page.goto(`${origin}/check-console.html?features=visualize&visualizer=substitution`)
+      await page.waitForFunction(() => window.ready, null, { timeout: 120000 })
+      const cdp = await context.newCDPSession(page)
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 12 })
+      const frame = page.frames().find((other) => other !== page.mainFrame())
+      // Every value the reserve (the canvas's min-height) takes, with the
+      // view's width (its scrollbar included).
+      await frame.evaluate(() => {
+        window.reserve = []
+        const watch = () => {
+          const canvas = document.querySelector('.visualizer-view > .visualizer-canvas')
+          if (!canvas) return requestAnimationFrame(watch)
+          new MutationObserver(() => window.reserve.push([parseFloat(canvas.style.minHeight) || 0, canvas.parentElement.offsetWidth])).observe(canvas, { attributes: true, attributeFilter: ['style'] })
+        }
+        watch()
+      })
+      await page.evaluate((source) => window.send('visualize', source), 'def notenschnitt(noten):\n    summe = sum(noten)\n    anzahl = len(noten)\n    return summe / anzahl\n\nnotenschnitt([4, 5, 4.5])\n')
+      await frame.locator('.visualizer-step-count').filter({ hasText: 'Vor der Ausführung' }).waitFor({ timeout: 60000 })
+      await page.waitForTimeout(6000)
+      const reserve = await frame.evaluate(() => window.reserve)
+      const drops = reserve.filter(([height, width], index) => index > 0 && height < reserve[index - 1][0] && width === reserve[index - 1][1]).length
+      assert.ok(reserve.some(([height]) => height > 0), 'a reserve was set')
+      assert.equal(drops, 0, `the reserve got smaller ${drops} times in 6 s at one width (${reserve.slice(0, 8).map(([height, width]) => `${height}px@${width}`).join(' ')} …)`)
+      console.log(`${label}: ok (${reserve.length} changes, none smaller)`)
+    } catch (error) {
+      failed += 1
+      console.error(`${label}: ${error.message}`)
+    }
+    await barsBrowser.close()
+  }
   // P62/P63: a function imported from a library or the standard library reads
   // «Funktion» like the file's own, in the footer and in a call box's rows
   // (no file name there); the footer's box shows what it does - the
