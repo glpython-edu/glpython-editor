@@ -513,3 +513,23 @@
 .run-button-labels { display: inline-grid; }
 .run-button-labels > span { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .run-button-labels > [aria-hidden="true"] { visibility: hidden; }
+
+/* «Schritte als Bilder …» (stepImages.ts): the dialog's two fields side by
+   side, and the steps drawn off-screen for the pictures. A picture shows
+   the step's state only: nothing that gives the order of the steps away -
+   not what has just changed, the current line or the lines already
+   executed, the current box's own variable row - and nothing that moves.
+   What comes next isn't marked there at all (rootFrame's `unmarked`, P68c:
+   the marked code lost its syntax colours). Arrows, step bar, footer and
+   console aren't drawn there. Last in the file, so these win over the rules
+   they undo. */
+.step-images-range { display: flex; gap: 12px; }
+.step-images-range label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--glp-text); }
+.visualizer-snapshot { position: fixed; top: 0; left: -100000px; pointer-events: none; }
+.visualizer-snapshot .visualizer-frame { flex: none; overflow: visible; }
+.visualizer-snapshot .visualizer-view { flex: none; overflow: visible; }
+.visualizer-snapshot *, .visualizer-snapshot *::before, .visualizer-snapshot *::after { animation: none !important; transition: none !important; }
+.visualizer-snapshot .visual-current-line, .visualizer-snapshot .visual-executed-line { background: none; }
+.visualizer-snapshot .visual-substituted-value { background: none; font-weight: inherit; }
+.visualizer-snapshot .frame-box--current > .frame-vars { position: static; background: none; }
+.visualizer-snapshot .visual-value-more-text { text-decoration: none; }

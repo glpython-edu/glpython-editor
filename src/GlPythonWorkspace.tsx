@@ -2,10 +2,10 @@ import { createPortal } from 'react-dom'
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import Editor, { useMonaco } from '@monaco-editor/react'
 import type { Monaco, OnMount } from '@monaco-editor/react'
-import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
+import { AlertTriangle, BookOpen, Copy, Square, FileCode2, FlaskConical, Images, Lock, PanelRightClose, PanelRightOpen, ChevronLeft, ChevronRight, Ellipsis, Play, RotateCcw, SkipBack, SkipForward, Sparkles, SquareTerminal, Terminal, Workflow, X } from 'lucide-react'
 import { projectImportsGturtle, type Project } from './project'
 import { GraphicsWindow, type TurtleCommand } from './GraphicsWindow'
-import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode } from './visualizer'
+import { buildAnnotationsUpTo, buildEvaluationChain, buildExecutedLinesUpTo, buildLocalsUpTo, buildSubstitutionsUpTo, collapseDeepCallChain, globalDefinitionSource, traceHasGlobals, withSessionGlobals, hasEvaluationChain, fullValuesUpTo, valueTreesUpTo, hiddenRangesWithin, removedLines, computeLineOffsets, computeOpenFramesUpTo, indexAstNodes, lineNumberAtOffset, locateNodeRenderedRange, nodeRange, renderFrameSource, substitutionModeSteps, type AstNode, type CollapsedCalls, type FullValue, type ImportedFunction, type OpenFrame, type BoxReason, type TraceResult, type TraceStep, type VisualizerMode, type CallDisplay } from './visualizer'
 import { tokenizePythonFragment, tokenizePythonLines } from './pyHighlight'
 import { GLPYTHON_PYTHON, registerGlpythonPython } from './pythonLanguage'
 import { defineGlpythonTheme, GLPYTHON_THEME } from './monacoTheme'
@@ -13,6 +13,7 @@ import type { ErrorHint, ErrorHintContext } from './errorHints'
 import { TreeView } from './TreeView'
 import { NODE_HEIGHT, ROW_HEIGHT, treeFromValue, type TreeLayout, type TreeNode, type ValueTree } from './treeLayout'
 import { activeTreesAt, buildExpressionTree, episodeTreeLayout, treeKeyOf, treeModeSteps, type TreeEpisode } from './treeMode'
+import { contentRight, downloadBlob, keepLinesWhole, STEP_IMAGE_MARGIN, stepImageName, zipStepImages } from './stepImages'
 
 type CoreStrings = {
   exitVisualizer: string
@@ -76,10 +77,11 @@ type CoreStrings = {
   visualizerModeBox?: string
   visualizerModeSubstitution?: string
   visualizerBoxHint?: string
-  // The third mode («Baum», with the `tree` capability), and why a call stays
-  // a box in the substitution and tree modes: the text after the function's
-  // name, e.g. "has local variables – the call is shown as a box."
-  visualizerModeTree?: string
+  // The option «⋯ Optionen» → «Ausdrücke als Bäume auswerten» (with the
+  // `tree` capability, P65; until then the mode «Baum»), and why a call stays
+  // a box in the substitution mode: the text after the function's name, e.g.
+  // "has local variables – the call is shown as a box."
+  visualizerTrees?: string
   // A Markdown tab's switch (with the host's renderMarkdown): its label, and
   // the file as a page or as its text.
   markdownViewLabel?: string
@@ -94,6 +96,17 @@ type CoreStrings = {
   copyChainDone?: string
   copyChainFailed?: string
   copyChainComments?: string
+  // The visualizer's steps as pictures (capability stepImages): the menu
+  // item, its dialog's title, fields and buttons, the progress on the
+  // download button, and what it says if the pictures couldn't be made.
+  stepImages?: string
+  stepImagesTitle?: string
+  stepImagesFrom?: string
+  stepImagesTo?: string
+  stepImagesDownload?: string
+  stepImagesCancel?: string
+  stepImagesProgress?: (done: number, total: number) => string
+  stepImagesFailed?: string
   chainConditionComment?: (condition: string, value: string) => string
   chainLocalsComment?: string
   // What the variables panel shows for a function, class or module instead
@@ -190,6 +203,10 @@ type WorkspaceCapabilities = {
   tests: boolean
   // The visualizer's "copy → chain" button and its comments switch.
   export: boolean
+  // «Schritte als Bilder …» in the visualizer's options: a range of steps as
+  // numbered PNGs in a zip, without what gives their order away (see
+  // stepImages.ts). For making exercises; on in the IDE, off in the embed.
+  stepImages: boolean
   // After Tests, when all examples pass: which lines of the file's functions
   // no example executed, in the report and (with the editor) marked in it.
   coverage: boolean
@@ -223,6 +240,7 @@ const defaultWorkspaceCapabilities: WorkspaceCapabilities = {
   run: true,
   tests: true,
   export: true,
+  stepImages: true,
   coverage: false,
   emptyOutput: true,
   closeFileTabs: true,
@@ -271,8 +289,11 @@ type GlPythonWorkspaceProps = {
   capabilities?: Partial<WorkspaceCapabilities>
   compact?: boolean
   command?: WorkspaceCommand | null
-  // Presets the visualizer's mode (e.g. from a LiaScript block). Without it
-  // the mode last chosen in this browser is used, and «substitution» at first.
+  // Presets the visualizer (e.g. from a LiaScript block): «box» (Kasten),
+  // «substitution» (Ersetzung), each without trees, or «tree» (Ersetzung
+  // with the option «Ausdrücke als Bäume auswerten», P65). Without it the
+  // mode and the option last chosen in this browser are used, «substitution»
+  // without trees at first.
   visualizerMode?: VisualizerMode
   // Called when Python starts or stops being busy for more than a moment
   // (a program, a REPL input, Tests, a visualization) - while it is, the run
@@ -312,6 +333,7 @@ function storedConsoleShare(): number {
 
 const animationsStorageKey = 'glpython-visualizer-animations'
 const visualizerModeStorageKey = 'glpython-visualizer-mode'
+const visualizerTreesStorageKey = 'glpython-visualizer-trees'
 const chainCommentsStorageKey = 'glpython-chain-comments'
 
 // Copies text to the clipboard, falling back to the older selection-based
@@ -339,12 +361,22 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-function storedVisualizerMode(): VisualizerMode {
+// The stored mode: «box» or «substitution». A «tree» stored before P65 (the
+// mode «Baum») reads as «substitution» with the trees option on; it isn't
+// rewritten, so an older embed of the same origin still reads its «Baum».
+function storedVisualizerMode(): CallDisplay {
   try {
-    const stored = localStorage.getItem(visualizerModeStorageKey)
-    return stored === 'box' || stored === 'tree' ? stored : 'substitution'
+    return localStorage.getItem(visualizerModeStorageKey) === 'box' ? 'box' : 'substitution'
   } catch {
     return 'substitution'
+  }
+}
+function storedVisualizerTrees(): boolean {
+  try {
+    const stored = localStorage.getItem(visualizerTreesStorageKey)
+    return stored === null ? localStorage.getItem(visualizerModeStorageKey) === 'tree' : stored === 'true'
+  } catch {
+    return false
   }
 }
 
@@ -1131,7 +1163,7 @@ function Frame(props: FrameProps) {
   const treeRange = treeRoot ? locateNodeRenderedRange(lineOffsets, nodeIndex, substitutions, annotations, treeRoot, false, substitutionContext) : null
   let expressionTree: ((boxSize: BoxSizes) => BuiltExpressionTree | null) | null = null
   if (trees && episode && treeRange) {
-    const context = { trace, nodeIndexByFile, sources: visualSources, openFrames, framesAt: trees.framesAt, nextKey: treeKeyOf(nextStep), errorKey: treeKeyOf(errorStep) }
+    const context = { trace, nodeIndexByFile, sources: visualSources, openFrames, framesAt: trees.framesAt, nextKey: treeKeyOf(nextStep), errorKey: treeKeyOf(errorStep), inlineCalls: substitutionMode }
     const buildWith = (boxSize: BoxSizes) => {
       const withSizes = { ...context, boxSize }
       const built = buildExpressionTree(withSizes, episode, uptoStep)
@@ -1524,7 +1556,7 @@ function OptionsMenu({ label, children }: { label: string; children: ReactNode }
   return (
     <div className="visualizer-options" onKeyDown={onKeyDown}>
       <button ref={buttonRef} type="button" className="secondary-button visualizer-options-button" aria-haspopup="menu" aria-expanded={isOpen} onClick={() => setIsOpen((open) => !open)}><Ellipsis size={15} aria-hidden="true" /> {label}</button>
-      {isOpen && <div ref={menuRef} className="visualizer-options-menu" role="menu" aria-label={label}>{children}</div>}
+      {isOpen && <div ref={menuRef} className="visualizer-options-menu" role="menu" aria-label={label} onClick={(event) => { if ((event.target as HTMLElement).closest('[data-closes-menu]')) setIsOpen(false) }}>{children}</div>}
     </div>
   )
 }
@@ -1648,16 +1680,19 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // local rows easing in, value-change flashes) are animated or applied
   // instantly - persisted like the locale choice, defaulting to on.
   const [animationsEnabled, setAnimationsEnabled] = useState<boolean>(() => localStorage.getItem(animationsStorageKey) !== 'false')
-  const [visualizerMode, setVisualizerMode] = useState<VisualizerMode>(() => visualizerModePreset ?? storedVisualizerMode())
+  // How calls are shown, and whether expressions are evaluated as trees (the
+  // option, P65): a preset sets both when the workspace mounts.
+  const [visualizerMode, setVisualizerMode] = useState<CallDisplay>(() => visualizerModePreset ? (visualizerModePreset === 'box' ? 'box' : 'substitution') : storedVisualizerMode())
+  const [treesChosen, setTreesChosen] = useState<boolean>(() => visualizerModePreset ? visualizerModePreset === 'tree' : storedVisualizerTrees())
   const [chainComments, setChainComments] = useState<boolean>(() => {
     try { return localStorage.getItem(chainCommentsStorageKey) !== 'false' } catch { return true }
   })
   const [chainFeedback, setChainFeedback] = useState<'copied' | 'failed' | null>(null)
-  // «Baum» only with its capability; else the substitution mode shows.
-  const effectiveMode: VisualizerMode = visualizerMode === 'tree' && !workspaceCapabilities.tree ? 'substitution' : visualizerMode
-  // The tree mode shows calls as the substitution mode does.
-  const substitutionMode = effectiveMode !== 'box'
-  const treeMode = effectiveMode === 'tree'
+  const effectiveMode = visualizerMode
+  const substitutionMode = visualizerMode === 'substitution'
+  // The trees only with their capability; a block without it ignores the
+  // stored choice and leaves it as it is.
+  const treeMode = treesChosen && workspaceCapabilities.tree
   const valueKindLabels = useMemo(() => ({
     function: t.valueKindFunction ?? 'function',
     class: t.valueKindClass ?? 'class',
@@ -2123,8 +2158,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // In the tree mode, the substitution mode's steps plus those that open and
   // close each expression's tree (see treeModeSteps).
   const treeSteps = useMemo(
-    () => visualTrace && treeMode ? treeModeSteps(visualTrace.trace, substitutionModeSteps(visualTrace.trace), astIndexByFile) : null,
-    [visualTrace, treeMode, astIndexByFile],
+    () => visualTrace && treeMode ? treeModeSteps(visualTrace.trace, substitutionMode ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace, astIndexByFile, substitutionMode) : null,
+    [visualTrace, treeMode, substitutionMode, astIndexByFile],
   )
   const visualTraceSteps = useMemo(
     () => !visualTrace ? [] : treeSteps ? treeSteps.steps : substitutionMode ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace,
@@ -2149,7 +2184,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const treePeek = useVisualizerPeek<TreePeekPayload>(visualizerFrameRef, (target) => (target instanceof Element ? target : target.parentElement)?.closest('[data-tree-peek]') != null)
   const treePeekAccess: TreePeekAccess = { handlers: treePeek.handlers, openKey: treePeek.peek?.key ?? null, id: 'glp-tree-peek', hintId: 'glp-tree-peek-hint' }
   const closeTreePeek = treePeek.close
-  useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { closeTreePeek() }, [currentTraceStep, visualTrace, effectiveMode, treeMode]) // eslint-disable-line react-hooks/exhaustive-deps
   // A traced REPL input starts with the session's globals in the footer (P61).
   const globalsTrace = useMemo(() => withSessionGlobals(visualTrace), [visualTrace])
   const fullValueAccess = useMemo<FullValueAccess>(() => ({
@@ -2438,26 +2473,44 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // The module's frame at a step, with the boxes and inline calls inside it:
   // the file that ran (a visualized REPL input's pseudo-file, else the main
   // file), whichever tab is open.
-  const rootFrame = (view: StepView) => {
+  // `unmarked`: without the marking of the next step (the step images, P68c:
+  // a marked run of code is drawn without its syntax colours, which gave
+  // the next step away). What the step shows - a call box one step early,
+  // a variable about to be assigned - comes from the view, not from this.
+  const rootFrame = (view: StepView, unmarked = false) => {
     const collapsedLabel = view.collapsedCalls
       ? t.visualizerCollapsedCalls?.(view.collapsedCalls.hiddenCount, view.collapsedCalls.callText)
         ?? `\u2026 ${view.collapsedCalls.hiddenCount} more calls${view.collapsedCalls.callText ? ` of ${view.collapsedCalls.callText}` : ''} \u2026`
       : ''
-    return <Frame frameId={0} path={visualRootPath ?? project.mainFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={boxHintFor} trees={treeMode ? { active: view.activeTrees, framesAt: treeFramesAt } : null} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
+    return <Frame frameId={0} path={visualRootPath ?? project.mainFile} scope={{ kind: 'module' }} openFrames={view.framesForRender} nodeIndexByFile={astIndexByFile} visualSources={visualSources} trace={visualTrace?.trace ?? []} uptoStep={view.currentStep?.step ?? -1} currentStep={view.currentStep} nextStep={unmarked ? null : view.nextStep} monaco={monaco} valueKindLabels={valueKindLabels} hiddenRanges={visualTrace?.hidden ?? {}} declareTarget={view.declareTarget} pendingCallLocals={view.pendingCallLocals} errorStep={view.isAtErrorStep ? errorTraceStep : null} collapsedCalls={view.collapsedCalls} collapsedCallsLabel={collapsedLabel} substitutionMode={substitutionMode} boxHint={boxHintFor} trees={treeMode ? { active: view.activeTrees, framesAt: treeFramesAt } : null} insideBox={false} activeHost={view.activeHost} errorHost={view.errorHost} finalNote={finalNoteAt(view)} errorHint={view.isAtErrorStep && visualTrace?.errorHint && t.errorHint?.(visualTrace.errorHint, 'other') ? <ErrorHintNote hint={visualTrace.errorHint} t={t} /> : null} />
   }
-  const changeVisualizerMode = (mode: VisualizerMode) => {
+  // Stay at the same point of the program when the mode or the trees
+  // option changes: the last step of the new list that isn't past the
+  // current one.
+  const keepProgramPoint = (mode: CallDisplay, trees: boolean) => {
+    if (!visualTrace) return
+    const current = currentTraceStep?.step ?? -1
+    const modeSteps = mode === 'substitution' ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace
+    const steps = trees ? treeModeSteps(visualTrace.trace, modeSteps, astIndexByFile, mode === 'substitution').steps : modeSteps
+    let index = -1
+    steps.forEach((step, stepIndex) => { if (step.step <= current) index = stepIndex })
+    setVisualStepIndex(index)
+  }
+  const changeVisualizerMode = (mode: CallDisplay) => {
     if (mode === effectiveMode) return
-    // Stay at the same point of the program: the last step of the new mode's
-    // list that isn't past the current one.
-    if (visualTrace) {
-      const current = currentTraceStep?.step ?? -1
-      const steps = mode === 'tree' ? treeModeSteps(visualTrace.trace, substitutionModeSteps(visualTrace.trace), astIndexByFile).steps : mode === 'substitution' ? substitutionModeSteps(visualTrace.trace) : visualTrace.trace
-      let index = -1
-      steps.forEach((step, stepIndex) => { if (step.step <= current) index = stepIndex })
-      setVisualStepIndex(index)
-    }
+    keepProgramPoint(mode, treeMode)
     setVisualizerMode(mode)
-    try { localStorage.setItem(visualizerModeStorageKey, mode) } catch { /* the choice just isn't remembered */ }
+    try {
+      // A «tree» stored before P65 holds the trees option too: keep it
+      // under its own key before the mode replaces it.
+      if (localStorage.getItem(visualizerTreesStorageKey) === null && localStorage.getItem(visualizerModeStorageKey) === 'tree') localStorage.setItem(visualizerTreesStorageKey, 'true')
+      localStorage.setItem(visualizerModeStorageKey, mode)
+    } catch { /* the choice just isn't remembered */ }
+  }
+  const changeTrees = (trees: boolean) => {
+    keepProgramPoint(effectiveMode, trees)
+    setTreesChosen(trees)
+    try { localStorage.setItem(visualizerTreesStorageKey, String(trees)) } catch { /* the choice just isn't remembered */ }
   }
 
   useLayoutEffect(() => {
@@ -2887,8 +2940,10 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // wraps differently), starts again.
   const steadyHeightRef = useRef(0)
   // The steps still to measure, for which trace, mode and width.
-  const [steadyMeasure, setSteadyMeasure] = useState<{ trace: TraceResult | null; mode: VisualizerMode; width: number; pending: number[] }>({ trace: null, mode: 'box', width: 0, pending: [] })
-  const steadyMeasureCurrent = steadyMeasure.trace === visualTrace && steadyMeasure.mode === effectiveMode
+  const [steadyMeasure, setSteadyMeasure] = useState<{ trace: TraceResult | null; mode: string; width: number; pending: number[] }>({ trace: null, mode: '', width: 0, pending: [] })
+  // Measured anew for each mode, with and without trees.
+  const steadyModeKey = `${effectiveMode}:${treeMode}`
+  const steadyMeasureCurrent = steadyMeasure.trace === visualTrace && steadyMeasure.mode === steadyModeKey
   const raiseSteadyHeight = (height: number) => {
     const canvas = visualizerCanvasRef.current
     if (!canvas || height <= steadyHeightRef.current) return
@@ -2913,14 +2968,14 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
         width = viewWidth()
         steadyHeightRef.current = 0
         canvas.style.minHeight = ''
-        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: effectiveMode, width: canvas.offsetWidth, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
+        if (compact && visualTrace) setSteadyMeasure({ trace: visualTrace, mode: steadyModeKey, width: canvas.offsetWidth, pending: steadyHeightCandidates(visualTrace.trace, visualTraceSteps) })
       }
       raiseSteadyHeight(canvas.offsetHeight)
     })
     observer.observe(canvas)
     return () => observer.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisualizing, visualTrace, effectiveMode, compact])
+  }, [isVisualizing, visualTrace, steadyModeKey, compact])
   const steadyMeasureRef = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const container = steadyMeasureRef.current
@@ -2941,6 +2996,122 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     return <div key={index} className="visualizer-canvas" data-measure-step={index}><FullValueContext.Provider value={access}>{rootFrame(view)}</FullValueContext.Provider></div>
   })}</div> : null
 
+  // «Schritte als Bilder …» (capability stepImages): a dialog asks for a
+  // range of the step counter's numbers (0 = before the start), by default
+  // the current step and the five after it. «Herunterladen» draws those
+  // steps off-screen through the same rootFrame(stepViewAt(…)) as the
+  // visible step, in the mode and with the options shown, at the canvas's
+  // width, and zips them as pictures of one size (see stepImages.ts); the
+  // dialog closes when the zip is downloaded. Cancelling stops the job.
+  const [stepImagesDialog, setStepImagesDialog] = useState<{ from: string; to: string } | null>(null)
+  const [stepImagesJob, setStepImagesJob] = useState<{ id: number; from: number; to: number; width: number; done: number } | null>(null)
+  const [stepImagesFailed, setStepImagesFailed] = useState(false)
+  const stepImagesRun = useRef(0)
+  const stepImagesLayerRef = useRef<HTMLDivElement | null>(null)
+  const stepImagesFieldRef = useRef<HTMLInputElement | null>(null)
+  const stepCount = visualTraceSteps.length
+  const stepImagesRange = (() => {
+    if (!stepImagesDialog) return null
+    const from = Number(stepImagesDialog.from)
+    const to = Number(stepImagesDialog.to)
+    if (stepImagesDialog.from.trim() === '' || stepImagesDialog.to.trim() === '' || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > stepCount) return null
+    return { from, to }
+  })()
+  const openStepImages = () => {
+    const from = clampedStepIndex + 1
+    setStepImagesFailed(false)
+    setStepImagesDialog({ from: String(from), to: String(Math.min(stepCount, from + 5)) })
+  }
+  const closeStepImages = () => {
+    stepImagesRun.current += 1
+    setStepImagesJob(null)
+    setStepImagesDialog(null)
+    document.querySelector<HTMLElement>('.visualizer-options-button')?.focus()
+  }
+  const startStepImages = () => {
+    if (!stepImagesRange || stepImagesJob) return
+    stepImagesRun.current += 1
+    setStepImagesFailed(false)
+    setStepImagesJob({ id: stepImagesRun.current, ...stepImagesRange, width: visualizerCanvasRef.current?.offsetWidth ?? 0, done: 0 })
+  }
+  useEffect(() => {
+    if (stepImagesDialog) stepImagesFieldRef.current?.select()
+  }, [stepImagesDialog !== null]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The visualization ended (Run, a new trace): the dialog's numbers no
+  // longer mean anything.
+  useEffect(() => {
+    stepImagesRun.current += 1
+    setStepImagesJob(null)
+    setStepImagesDialog(null)
+  }, [isVisualizing, visualTrace])
+  useEffect(() => {
+    const job = stepImagesJob
+    const layer = stepImagesLayerRef.current
+    if (!job || !layer) return
+    const isCancelled = () => stepImagesRun.current !== job.id
+    const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const make = async () => {
+      // Once the steps hold still: a tree's call box measures itself and is
+      // laid out again in a render of its own (ExpressionTreeBox), and with
+      // many steps drawn at once that took more than the two frames waited
+      // here before - the trees still scrolled, cut off, when the pictures
+      // were cropped and taken (P68d). Until the sizes of the steps and their
+      // trees stay the same for two frames, at most about two seconds.
+      const sizesNow = () => [...layer.querySelectorAll<HTMLElement>('[data-step-image], [data-step-image] .value-tree-scroll')].map((element) => `${element.scrollWidth}x${element.scrollHeight}/${element.clientWidth}`).join()
+      await frames()
+      for (let tries = 0, before = sizesNow(); tries < 60; tries++) {
+        await frames()
+        if (isCancelled()) return
+        const now = sizesNow()
+        if (now === before) break
+        before = now
+      }
+      if (isCancelled()) return
+      const steps = [...layer.querySelectorAll<HTMLElement>('[data-step-image]')]
+      for (const frame of steps) keepLinesWhole(frame)
+      // All pictures as large as the largest step: cropped to the widest
+      // step's content and a margin (a course scales a picture to its
+      // column), the tallest step's height.
+      const width = Math.ceil(Math.max(...steps.map(contentRight)) + STEP_IMAGE_MARGIN)
+      const height = Math.ceil(Math.max(...steps.map((frame) => frame.offsetHeight)))
+      // Cropped in the picture only: the frames keep the canvas's width
+      // (set where they are drawn, P68d: without it a frame here was 0px
+      // wide, and a tree - whose room is its view's width, ExpressionTreeBox
+      // - got its least, scrolled, and was cut off in its picture; narrowed
+      // here, it would lay itself out again in the narrower view).
+      for (const frame of steps) frame.style.height = `${height}px`
+      const background = getComputedStyle(steps[0]).backgroundColor
+      const zip = await zipStepImages(steps.map((frame) => ({ name: stepImageName(Number(frame.dataset.stepImage), job.to), frame })), {
+        width,
+        height,
+        background,
+        onProgress: (done) => { if (!isCancelled()) setStepImagesJob((current) => current?.id === job.id ? { ...current, done } : current) },
+        cancelled: isCancelled,
+      })
+      if (!zip || isCancelled()) return
+      const stem = (visualRootPath ?? project.mainFile).replace(/^.*\//, '').replace(/\.py$/, '').replace(/[<>]/g, '') || 'steps'
+      downloadBlob(zip, `${stem}-${stepImageName(job.from, job.to).replace('.png', '')}-${stepImageName(job.to, job.to).replace('.png', '')}.zip`)
+      stepImagesRun.current += 1
+      setStepImagesJob(null)
+      setStepImagesDialog(null)
+    }
+    make().catch(() => {
+      if (isCancelled()) return
+      stepImagesRun.current += 1
+      setStepImagesJob(null)
+      setStepImagesFailed(true)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepImagesJob?.id])
+  const stepImagesLayerNode = stepImagesJob && visualTrace ? <div className="visualizer-snapshot" ref={stepImagesLayerRef} aria-hidden="true" inert>{Array.from({ length: stepImagesJob.to - stepImagesJob.from + 1 }, (_, offset) => {
+    const number = stepImagesJob.from + offset
+    const view = stepViewAt(visualTrace.trace, visualTraceSteps, number - 1, astIndexByFile, substitutionMode, treeSteps?.episodes ?? null)
+    const step = view.currentStep?.step ?? -1
+    const access: FullValueAccess = { functions: visualTrace.functions, values: fullValuesUpTo(globalsTrace, step, visualTrace.values), trees: workspaceCapabilities.listTree ? valueTreesUpTo(globalsTrace, step, visualTrace.trees) : new Map(), showTrees: workspaceCapabilities.listTree && showListTrees, open: () => {}, t }
+    return <div key={number} className="visualizer-frame" data-step-image={number} style={{ width: stepImagesJob.width || undefined }}><div className="visualizer-view"><div className="visualizer-canvas" style={{ width: stepImagesJob.width || undefined }}><FullValueContext.Provider value={access}>{rootFrame(view, true)}</FullValueContext.Provider></div></div></div>
+  })}</div> : null
+  const stepImagesDialogNode = stepImagesDialog && isVisualizing ? <div className="input-dialog-backdrop" role="presentation" onClick={closeStepImages}><form className="input-dialog step-images-dialog" role="dialog" aria-modal="true" aria-label={t.stepImagesTitle ?? 'Steps as images'} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeStepImages() } }} onSubmit={(event) => { event.preventDefault(); startStepImages() }}><div className="input-dialog-heading"><span>{t.stepImagesTitle ?? 'Steps as images'}</span></div><div className="step-images-range"><label>{t.stepImagesFrom ?? 'From step'}<input ref={stepImagesFieldRef} className="input-dialog-field" type="number" min={0} max={stepCount} step={1} value={stepImagesDialog.from} disabled={stepImagesJob !== null} onChange={(event) => setStepImagesDialog((dialog) => dialog && { ...dialog, from: event.target.value })} /></label><label>{t.stepImagesTo ?? 'to step'}<input className="input-dialog-field" type="number" min={0} max={stepCount} step={1} value={stepImagesDialog.to} disabled={stepImagesJob !== null} onChange={(event) => setStepImagesDialog((dialog) => dialog && { ...dialog, to: event.target.value })} /></label></div><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={closeStepImages}>{t.stepImagesCancel ?? 'Cancel'}</button><button type="submit" className="run-button" disabled={!stepImagesRange || stepImagesJob !== null}>{stepImagesJob ? (t.stepImagesProgress?.(stepImagesJob.done, stepImagesJob.to - stepImagesJob.from + 1) ?? `${stepImagesJob.done} of ${stepImagesJob.to - stepImagesJob.from + 1} \u2026`) : stepImagesFailed ? (t.stepImagesFailed ?? 'The images could not be made') : (t.stepImagesDownload ?? 'Download')}</button></div></form></div> : null
+
   const visualStepBack = () => setVisualStepIndex((index) => Math.max(-1, index - 1))
   const visualStepForward = () => setVisualStepIndex((index) => Math.min(visualTraceSteps.length - 1, index + 1))
   const visualFirstStep = () => setVisualStepIndex(-1)
@@ -2953,7 +3124,7 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   const testsFromActions = () => { if (isVisualizing) exitVisualizer(); runTests() }
   const actionsNode = workspaceCapabilities.actions ? <div className="editor-actions">{(workspaceCapabilities.run || showStopButton) && <button className="run-button" onClick={showStopButton ? stopPython : isRunning ? undefined : runFromActions} aria-disabled={isRunning && !showStopButton}><span className="run-button-labels"><span aria-hidden={showStopButton}><Play size={15} fill="currentColor" /> {t.runProject}</span><span aria-hidden={!showStopButton}><Square size={13} fill="currentColor" /> {t.stop ?? 'Stop'}</span></span></button>}{workspaceCapabilities.tests && <button className="secondary-button" onClick={testsFromActions} disabled={isTesting || inputRequest !== null}><FlaskConical size={15} /> {t.runTests ?? 'Tests'}</button>}{workspaceCapabilities.visualization && <button className="secondary-button" onClick={runVisualize} disabled={isRunning || isVisualizerLoading || inputRequest !== null}><Workflow size={15} /> {t.visualize}</button>}{workspaceCapabilities.resetOutput && <button className="secondary-button" onClick={resetPython}><RotateCcw size={15} /> {t.resetOutput}</button>}</div> : null
   const breadcrumbsNode = <div className="breadcrumbs"><span>{project.name}</span><span>/</span><strong>{selectedFile.path}</strong></div>
-  const visualizerBarNode = <div className="visualizer-bar">{visualizerBarStart}{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button>{workspaceCapabilities.tree && <button type="button" aria-pressed={effectiveMode === 'tree'} onClick={() => changeVisualizerMode('tree')}>{t.visualizerModeTree ?? 'Tree'}</button>}</div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
+  const visualizerBarNode = <div className="visualizer-bar">{visualizerBarStart}{visualTraceSteps.length > 0 ? <><div className="visualizer-controls"><button type="button" className="icon-button small" aria-label={t.visualizerFirstStep ?? t.visualizerRestart} title={t.visualizerFirstStep ?? t.visualizerRestart} onClick={visualFirstStep} disabled={clampedStepIndex === -1}><SkipBack size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerPrevStep} title={t.visualizerPrevStep} onClick={visualStepBack} disabled={clampedStepIndex === -1}><ChevronLeft size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerNextStep} title={t.visualizerNextStep} onClick={visualStepForward} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><ChevronRight size={15} /></button><button type="button" className="icon-button small" aria-label={t.visualizerLastStep ?? 'Last step'} title={t.visualizerLastStep ?? 'Last step'} onClick={visualLastStep} disabled={clampedStepIndex >= visualTraceSteps.length - 1}><SkipForward size={15} /></button></div><div className="visualizer-scrubber-track"><input className="visualizer-scrubber" type="range" min={-1} max={Math.max(0, visualTraceSteps.length - 1)} value={clampedStepIndex} onChange={(event) => { setVisualStepIndex(Number(event.target.value)) }} />{errorTraceStep && <span className="visualizer-scrubber-error" title={errorTraceStep.label} style={{ '--marker-position': (visualTraceSteps.indexOf(errorTraceStep) + 1) / Math.max(1, visualTraceSteps.length) } as CSSProperties} />}</div><span className="visualizer-step-count">{clampedStepIndex === -1 ? t.visualizerBeforeStart : t.visualizerStepOf(clampedStepIndex + 1, visualTraceSteps.length)}</span>{visualTrace?.truncated && <span className="visualizer-truncated-hint"><AlertTriangle size={13} />{t.visualizerTruncated}</span>}</> : <span className="visualizer-step-count">{t.visualizerNoSteps}</span>}<div className="visualizer-mode" role="group" aria-label={t.visualizerModeLabel ?? 'Display'}><button type="button" aria-pressed={effectiveMode === 'box'} onClick={() => changeVisualizerMode('box')}>{t.visualizerModeBox ?? 'Box'}</button><button type="button" aria-pressed={effectiveMode === 'substitution'} onClick={() => changeVisualizerMode('substitution')}>{t.visualizerModeSubstitution ?? 'Substitution'}</button></div><OptionsMenu label={t.visualizerOptions ?? 'Options'}><button type="button" role="menuitemcheckbox" aria-checked={animationsEnabled} className="visualizer-options-item" onClick={() => setAnimationsEnabled((enabled) => !enabled)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerAnimate}</button>{workspaceCapabilities.listTree && <button type="button" role="menuitemcheckbox" aria-checked={showListTrees} className="visualizer-options-item" onClick={() => setShowListTrees((shown) => !shown)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerListTrees ?? 'Show lists as trees'}</button>}{workspaceCapabilities.tree && <button type="button" role="menuitemcheckbox" aria-checked={treeMode} className="visualizer-options-item" onClick={() => changeTrees(!treeMode)}><span className="visualizer-options-check" aria-hidden="true" />{t.visualizerTrees ?? 'Evaluate expressions as trees'}</button>}{workspaceCapabilities.export && <><button type="button" role="menuitemcheckbox" aria-checked={chainComments} className="visualizer-options-item" onClick={() => changeChainComments(!chainComments)}><span className="visualizer-options-check" aria-hidden="true" />{t.copyChainComments ?? 'Comments'}</button><button type="button" role="menuitem" className="visualizer-options-item visualizer-chain-copy" onClick={copyEvaluationChain} disabled={!canCopyChain}><Copy size={14} aria-hidden="true" />{chainFeedback === 'copied' ? (t.copyChainDone ?? 'Copied') : chainFeedback === 'failed' ? (t.copyChainFailed ?? 'Could not copy') : (t.copyChain ?? 'Copy \u2192 chain')}</button></>}{workspaceCapabilities.stepImages && visualTraceSteps.length > 0 && <button type="button" role="menuitem" className="visualizer-options-item" data-closes-menu onClick={openStepImages}><Images size={14} aria-hidden="true" />{t.stepImages ?? 'Steps as images \u2026'}</button>}</OptionsMenu>{workspaceCapabilities.exitVisualizer && <button type="button" className="icon-button small visualizer-exit" aria-label={t.exitVisualizer} title={t.exitVisualizer} onClick={exitVisualizer}><X size={16} /></button>}</div>
   const visualizerWarningNode = <>{isVisualizing && visualTrace?.error && !errorTraceStep && <div className="visualizer-warning"><AlertTriangle size={14} />{t.visualizerError(visualTrace.error)}</div>}</>
   const editorTabsNode = <div className="editor-tabs">{openFiles.map((path) => { const file = project.files[path]; return <button className={`editor-tab ${activeFile === path ? 'active' : ''}`} key={path} onClick={() => onOpenFile(path)}><span className={`tab-file-icon ${file.kind === 'python' ? 'python' : 'notes'}`}>{file.kind === 'python' ? <FileCode2 size={14} /> : <BookOpen size={14} />}</span><span>{file.path}</span>{file.readOnly && <span className="tab-read-only" role="img" aria-label={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'} title={t.readOnlyFile ?? 'Read-only: this file can be read but not changed.'}><Lock size={12} /></span>}{workspaceCapabilities.closeFileTabs && <span className="tab-close" role="button" aria-label={t.closeFile(file.path)} onClick={(event) => { event.stopPropagation(); onCloseFile(path) }}><X size={13} /></span>}</button> })}{isMarkdown && !isVisualizing && <div className="markdown-switch" role="group" aria-label={t.markdownViewLabel ?? 'Show the file'}><button type="button" aria-pressed={markdownView === 'page'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'page' }))}>{t.markdownPage ?? 'View'}</button><button type="button" aria-pressed={markdownView === 'text'} onClick={() => setMarkdownViews((views) => ({ ...views, [selectedPath]: 'text' }))}>{t.markdownText ?? 'Text'}</button></div>}</div>
   const editorWrapNode = <div className="editor-wrap">{isVisualizing ? <div className={`visualizer-frame${animationsEnabled ? ' visualizer-animated' : ''}`} ref={visualizerFrameRef}><div className="visualizer-view" ref={visualizerScrollRef} data-steady-height={compact ? (!steadyMeasureCurrent || steadyMeasure.pending.length > 0 ? 'measuring' : 'done') : undefined}><div className="visualizer-canvas" ref={visualizerCanvasRef}><FullValueContext.Provider value={fullValueAccess}><TreePeekContext.Provider value={treePeekAccess}>{rootFrame(currentStepView)}</TreePeekContext.Provider></FullValueContext.Provider>{animationsEnabled && closingBoxes.length > 0 && <div className="visualizer-closing-boxes">{closingBoxes.map((box) => <div key={box.id} className="visual-closing-box-ghost" style={{ left: box.left, top: box.top, width: box.width, height: box.height }} dangerouslySetInnerHTML={{ __html: box.html }} />)}</div>}{(connectorPaths.length > 0 || flights.length > 0) && <svg className="visualizer-connectors"><defs><marker id="visualizer-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'canvas' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'canvas' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead)" />)}</svg>}{animationsEnabled && flights.length > 0 && <div className="visualizer-flights">{flights.map((flight) => flight.layer === 'canvas' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div>{steadyMeasureNode}</div>{showGlobalsFooter && <FullValueContext.Provider value={fullValueAccess}><GlobalsFooter entries={globalEntries} reserveEntries={finalGlobalEntries} valueKindLabels={valueKindLabels} definitionOf={globalDefinitionOf} monaco={monaco} frameRef={visualizerFrameRef} resetKey={visualTrace} /></FullValueContext.Provider>}{fullValueAccess.showTrees && <span id="glp-tree-peek-hint" hidden>{t.showTree ?? 'Show tree'}</span>}{treePeek.peek && fullValueAccess.trees.get(treePeek.peek.payload.value) && <div className="visualizer-globals-peek visualizer-tree-peek" id="glp-tree-peek" {...treePeek.boxProps}><GlobalsPeekTree tree={fullValueAccess.trees.get(treePeek.peek.payload.value)!} label={treePeek.peek.payload.value} /></div>}{(connectorPaths.some((connector) => connector.layer === 'frame') || flights.some((flight) => flight.layer === 'frame')) && <svg className="visualizer-connectors visualizer-connectors--frame"><defs><marker id="visualizer-arrowhead-frame" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" /></marker></defs>{connectorPaths.map((connector, index) => connector.layer === 'frame' && <path key={index} d={connector.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}{animationsEnabled && flights.map((flight) => flight.layer === 'frame' && <path key={`flight-${flight.id}`} className="visual-flight-arrow" d={flight.d} markerEnd="url(#visualizer-arrowhead-frame)" />)}</svg>}{animationsEnabled && flights.some((flight) => flight.layer === 'frame') && <div className="visualizer-flights visualizer-flights--frame">{flights.map((flight) => flight.layer === 'frame' && <span key={flight.id} className="visual-flight-value" style={{ offsetPath: `path('${flight.d}')` }}>{flight.value}</span>)}</div>}</div> : <>{isMarkdown && markdownView === 'page' && <div className="markdown-page" tabIndex={0} aria-label={selectedPath} dangerouslySetInnerHTML={{ __html: markdownHtml }} />}<div className="editor-host" inert={isMarkdown && markdownView === 'page'}><Editor key="normal-editor" height="100%" language={selectedFile.kind === 'python' ? GLPYTHON_PYTHON : 'markdown'} theme={GLPYTHON_THEME} beforeMount={(instance) => { registerGlpythonPython(instance); defineGlpythonTheme(instance) }} value={selectedFile.code} onChange={updateCode} onMount={setNormalEditor} options={{ minimap: { enabled: false }, bracketPairColorization: { enabled: false }, fontSize: 15, lineHeight: 24, padding: { top: 22 }, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', scrollBeyondLastLine: false, smoothScrolling: true, automaticLayout: true, tabSize: 4, insertSpaces: true, detectIndentation: false, placeholder: t.editorPlaceholder ?? 'Type code here', unicodeHighlight: EDITOR_UNICODE_HIGHLIGHT, readOnly: selectedFile.readOnly === true, domReadOnly: selectedFile.readOnly === true, readOnlyMessage: { value: t.readOnlyFile ?? 'Read-only: this file can be read but not changed.' } }} /></div></>}</div>
@@ -2982,6 +3153,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   return (
     <div className={workspaceClassName}>
               {compact ? <div className="main-split"><div className="editor-column"><div className="editor-header">{breadcrumbsNode}{isVisualizing || !actionsNode ? <div className="editor-actions" /> : actionsNode}</div>{isVisualizing && visualizerBarNode}{visualizerWarningNode}{(workspaceCapabilities.editor || isVisualizing) && <section className="editor-panel">{editorTabsNode}{editorWrapNode}</section>}{consoleNode}</div>{isGraphicsOpen ? <aside className="graphics-panel"><div className="output-heading"><div className="output-title"><Sparkles size={16} /><span>{t.turtleGraphics}</span>{graphics.length > 0 && <span className="runtime-badge"><span className="pulse" /> {t.gturtleWindow}</span>}</div><button className="icon-button small" aria-label={t.collapseGraphics} onClick={() => onGraphicsOpenChange(false)}><PanelRightClose size={15} /></button></div>{(isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics).length > 0 ? <GraphicsWindow commands={isVisualizing ? (visualTrace?.graphics.slice(0, currentTraceStep?.graphicsLen ?? 0) as TurtleCommand[] ?? []) : graphics} /> : <p className="graphics-empty">{t.graphicsEmptyBefore} <code>gturtle</code> {t.graphicsEmptyAfter}</p>}</aside> : <button className="graphics-collapsed-toggle" aria-label={t.expandGraphics} onClick={() => onGraphicsOpenChange(true)}><PanelRightOpen size={16} /><span>{t.graphicsCollapsedLabel}</span></button>}</div> : <><div className="workspace-stack" ref={stackRef}>{!actionsContainer && (actionsNode || workspaceCapabilities.breadcrumbs) && <div className="editor-header">{workspaceCapabilities.breadcrumbs && breadcrumbsNode}{actionsNode}</div>}<div className="stack-top" style={{ flexBasis: `${(1 - consoleShare) * 100}%` }}><section className="editor-panel"><div className="stack-strip">{isVisualizing ? visualizerBarNode : workspaceCapabilities.fileTabs ? editorTabsNode : null}</div>{visualizerWarningNode}{editorWrapNode}</section>{stackedGraphicsNode}</div><div className="stack-divider" role="separator" aria-orientation="horizontal" aria-label={t.consoleSize ?? 'Console size'} aria-valuemin={Math.round(CONSOLE_SHARE_MIN * 100)} aria-valuemax={Math.round(CONSOLE_SHARE_MAX * 100)} aria-valuenow={Math.round(consoleShare * 100)} tabIndex={0} onPointerDown={startConsoleResize} onKeyDown={resizeConsoleWithKeys} /><div className="stack-console" style={{ flexBasis: `${consoleShare * 100}%` }}>{consoleNode}</div></div>{actionsContainer && actionsNode && createPortal(actionsNode, actionsContainer)}</>}
+      {stepImagesDialogNode}
+      {stepImagesLayerNode}
       {isVisualizing && fullValueView && <FullValueDialog value={fullValueView.value} name={fullValueView.name} tree={fullValueView.tree} t={t} onClose={() => setFullValueView(null)} />}
       {inputRequest !== null && !programInput && <div className="input-dialog-backdrop" role="presentation" onClick={() => respondToInput(true)}><form className="input-dialog" role="dialog" aria-modal="true" aria-label={t.inputDialogTitle} onClick={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); respondToInput(false) }}><div className="input-dialog-heading"><Terminal size={16} /><span>{t.inputDialogTitle}</span></div><p className="input-dialog-prompt">{inputRequest || t.inputDialogFallbackPrompt}</p><input ref={inputFieldRef} className="input-dialog-field" type="text" value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={t.inputPlaceholder} /><div className="input-dialog-actions"><button type="button" className="secondary-button" onClick={() => respondToInput(true)}>{t.inputCancel}</button><button type="submit" className="run-button">{t.inputSubmit}</button></div></form></div>}
     </div>

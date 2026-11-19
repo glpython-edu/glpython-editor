@@ -113,9 +113,29 @@ shows nothing for `None`, as CPython's REPL.
 
 The visualizer's toolbar is one line: first step, previous step, next step,
 last step, the scrubber, the step counter, the box/substitution switch, the
-**⋯ Options** menu (animated steps, and with `export` the → chain's comments and
-copy button) and ✕ to exit (`visualizerFirstStep`, `visualizerLastStep`,
-`visualizerOptions`; ✕ uses `exitVisualizer`).
+**⋯ Options** menu (animated steps, with `export` the → chain's comments and
+copy button, and with `stepImages` «Steps as images …») and ✕ to exit
+(`visualizerFirstStep`, `visualizerLastStep`, `visualizerOptions`; ✕ uses
+`exitVisualizer`).
+
+**Steps as images** (capability `stepImages`; on by default, so in the IDE;
+off in the embed unless `features=` lists `stepimages`): for exercises in
+which learners put a few steps back in order. «Steps as images …» opens a
+dialog with a range of the step counter's numbers (0 is «Before the start»;
+by default the current step and the five after it); «Download» gives a zip
+of PNGs named by those numbers (`00.png`, `07.png`, …), nothing else. Each
+step is drawn off-screen (`.visualizer-snapshot`) in the mode and with the
+options shown, at the visualizer's width, and all pictures of a zip have one
+size: cropped to the widest step's content and a small margin (a course or
+exam.net scales a picture to its column), the tallest step's height, smaller
+steps filled with the background from the top left; pixel ratio 2, light
+colours. What is on one line in the step stays on one line in its picture.
+A picture shows the step's state and nothing that gives the order away: no
+arrows, no marking of what comes next, of what has just changed, of the
+current or the executed lines, no own background or sticky place for the
+current box's variable row, no animation, and neither step bar, footer of
+global variables nor console. `html-to-image` and `fflate` are loaded on the
+first use (`src/stepImages.ts`). Made for Chrome.
 
 With animated steps, a call box flies in from its function's entry (in the
 footer of global variables), and a return value slides from the box's return
@@ -166,27 +186,42 @@ statements, no `return <expression>`, an expression that can't be written out;
 the runtime's `boxReason` on the call's step). In **box** mode every call opens
 a box.
 
-The mode last chosen is remembered per browser. A host can preset it with the
-`visualizerMode` prop (`'box'`, `'substitution'` or `'tree'`), and the embed with
-the `visualizer=box`, `visualizer=substitution` or `visualizer=tree` query
-parameter. The toggle's texts are `visualizerModeLabel`, `visualizerModeBox`,
-`visualizerModeSubstitution` and `visualizerModeTree`, all optional like
-`visualizerBoxHint` (the box's note without a reason).
+The mode last chosen is remembered per browser (`glpython-visualizer-mode`),
+and so is the trees option below (`glpython-visualizer-trees`). A host can
+preset both with the `visualizerMode` prop, and the embed with the
+`visualizer=` query parameter:
 
-### Tree mode (`tree`)
+| Preset | Calls | Trees |
+|---|---|---|
+| `box` | box | off |
+| `substitution` | substitution | off |
+| `tree` | substitution | on (until P65 the mode «Baum») |
+| none | the stored mode | the stored option |
+
+A preset wins when the workspace mounts and isn't stored; a click stores the
+choice. A `tree` stored as the mode before P65 reads as substitution with
+the option on; it isn't rewritten, so an older embed of the same origin still
+reads it. The toggle's texts are `visualizerModeLabel`, `visualizerModeBox`
+and `visualizerModeSubstitution`, all optional like `visualizerBoxHint` (the
+box's note without a reason).
+
+### Expressions as trees (`tree`)
 
 With the capability `tree` (off by default; the embed's `features=tree`), the
-switch has a third mode, **Baum**: an expression is shown as its syntax tree
-while it is evaluated. Without the capability there is no third button, and a
-stored or preset `'tree'` shows the substitution mode. For an expression `e`
+visualizer's «⋯ Optionen» has the switch **Ausdrücke als Bäume auswerten**
+(`visualizerTrees`; until P65 a third mode, «Baum»): an expression is shown
+as its syntax tree while it is evaluated, in either mode. Without the
+capability there is no switch, and a stored or preset option is ignored (and
+kept). For an expression `e`
 (the value of an expression statement, an assignment or a `return`, an `if`'s
 or `while`'s condition; not a bare name or literal):
 1. **Open:** one step replaces `e` by its tree, in a box at its place in the line.
-2. **Reductions:** exactly the substitution mode's steps, each one a subtree
-   becoming its value; a node without a step of its own (a display, `-x`)
-   becomes its value with its last child. A call with a single
+2. **Reductions:** exactly the mode's steps, each one a subtree becoming its
+   value; a node without a step of its own (a display, `-x`) becomes its
+   value with its last child. In substitution mode a call with a single
    `return <expression>` is replaced by that expression's tree. Any other
-   call, once its box opens, has the box in its node's place - the parent's
+   call - in box mode every call - once its box opens (or is about to, one
+   step early), has the box in its node's place - the parent's
    edge leads to the box's top, its siblings stay on their row - without
    the note of the substitution mode (the box in the call's place shows it
    stays a box); inside it, each line has its own tree and calls of their
@@ -602,8 +637,9 @@ macro: `features=run,repl,visualize,…` hides the REPL (`repl`), the visualizer
 (`visualize`) or its → chain export (`export`) unless listed (capabilities
 `repl`, `visualization`, `export`); `coverage` in that list switches on the
 coverage after Tests (capability `coverage`), `listtree` lists drawn as
-trees (capability `listTree`) and `tree` the visualizer's mode «Baum»
-(capability `tree`), which a missing `features` doesn't; and `size=large`
+trees (capability `listTree`) and `tree` the visualizer's option «Ausdrücke
+als Bäume auswerten» (capability `tree`) and `stepimages` the visualizer's
+«Schritte als Bilder …» (capability `stepImages`), which a missing `features` doesn't; and `size=large`
 shows bigger code.
 
 **Its height is the parent's.** The embed fills its iframe and reports the
@@ -710,6 +746,54 @@ reload), and glpython's own Python language `glpython-python`
 keywords as keywords (not builtins such as `print` or `type`), `True`,
 `False` and `None` as values, and comments after code. The visualizer
 highlights code with the same language.
+
+## Werkzeuge für die Kursentwicklung
+
+Two scripts let whoever writes course material, a person or an agent, get the
+visualizer's → chain and its step pictures without sitting at the IDE.
+
+They open the deployed glpython IDE in headless Chrome, run the file, enter the
+call in the REPL and visualize it, as a learner does. So they show what learners
+see. They need Google Chrome installed and this repo's `npm install`
+(`playwright-core`), but no build, and they leave the working tree alone.
+
+Paths are relative to the folder you call from. `--silent` keeps npm's own
+lines out of the output.
+
+```bash
+npm --silent --prefix ../glpython-editor run chain -- --file funktionen.py --call "differenz(2 + 1, dreifach(1))" --visible
+npm --silent --prefix ../glpython-editor run step-images -- --file auswerter.py --lib parser.py --call "auswerten(['-', 7, 2])" --mode box --list
+npm --silent --prefix ../glpython-editor run step-images -- --file auswerter.py --lib parser.py --call "auswerten(['-', 7, 2])" --mode box --from 3 --to 7 --out bilder.zip
+```
+
+- **`chain`** prints the chain exactly as «→ Kette kopieren» copies it, comments
+  included.
+  - With `--visible`, it then prints each step's number and the text the
+    visualizer draws on the call's line.
+  - A call box shows as `[f(x=1): return …]` and an open tree as
+    `[Baum: root / children / …]`.
+  - Every drawn text without a box or a tree must be a line of the chain, in
+    the chain's order. A step that isn't is marked `≠`, and the exit code is 1.
+- **`step-images`** makes the zip with the IDE's own «Schritte als Bilder …»:
+  the same pictures, names (`00.png`, …), size and pixel ratio as by hand.
+  - With `--list`, it prints the counter's step numbers and each step's text
+    instead, to pick a range.
+- **Both take these options:**
+  - `--mode box|substitution` (default `substitution`);
+  - `--trees` for «Ausdrücke als Bäume auswerten»;
+  - `--lib <file.py>`, repeatable, for a library such as the course's
+    `parser.py` (read-only, as in a course link);
+  - `--ide live|dev` (default `live`): `https://glpython-edu.github.io/` or its
+    `/dev/`.
+- **Output and exit codes:**
+  - The IDE's version (its `version.json`) goes to stderr.
+  - A Python error in the file or in the call is printed as the IDE shows it,
+    with exit code 1.
+  - A wrong option, or a feature the chosen IDE doesn't have yet (e.g.
+    `step-images` on `live` before P68 is promoted), is a message with exit
+    code 2.
+  - `GLPYTHON_IDE_URL` points them at another IDE, e.g. a local `vite preview`
+    of an IDE build.
 
 ## Development
 
