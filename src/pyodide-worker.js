@@ -227,7 +227,10 @@ async function runProgram(project) {
     callPython(pyodide, '_glpython_run_project', `/${project.mainFile}`)
     lastRunOutcome = runOutput
     const graphicsJson = callPython(pyodide, '_glpython_graphics_json')
-    self.postMessage({ type: 'result', output: runOutput.trim(), graphics: JSON.parse(String(graphicsJson)) })
+    // Without the line break after the last line (each printed line ends in
+    // one, see setStdout) and trailing empty lines, but with the first line's
+    // leading spaces, as Python printed them (P74 B).
+    self.postMessage({ type: 'result', output: runOutput.trimEnd(), graphics: JSON.parse(String(graphicsJson)) })
     return true
   } catch (error) {
     // What the program printed, then Python's traceback as CPython shows
