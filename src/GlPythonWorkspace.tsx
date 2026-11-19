@@ -1270,7 +1270,7 @@ function Frame(props: FrameProps) {
     </span>
   )
   const renderSegments = (segments: LineSegment[]): ReactNode[] => segments.map((segment, segmentIndex) => segment.kind === 'child' && segment.frame === null ? (
-    expressionTree && <ExpressionTreeBox key={segmentIndex} build={expressionTree} renderBoxFrame={(frame) => renderChild(frame, frame.frameId)} />
+    expressionTree && <ExpressionTreeBox key={segmentIndex} treeId={`${frameId}:${episode!.id}`} build={expressionTree} renderBoxFrame={(frame) => renderChild(frame, frame.frameId)} />
   ) : segment.kind === 'child' ? renderChild(segment.frame!, segmentIndex) : segment.kind === 'group' ? (
 
     <span key={segmentIndex} className={segment.className}>
@@ -1380,7 +1380,9 @@ type BuiltExpressionTree = { tree: TreeNode; layout: TreeLayout; text: string; b
 // as the visualizer shows from where it starts, so a wide tree scrolls in
 // itself (TreeView: root centred, hints at the hidden edges) instead of
 // widening the canvas.
-function ExpressionTreeBox({ build, renderBoxFrame }: { build: (boxSize: BoxSizes) => BuiltExpressionTree | null; renderBoxFrame: (frame: OpenFrame) => ReactNode }) {
+// `treeId`: the frame and the episode, so the scroll effect sees a tree that
+// just opened (P74).
+function ExpressionTreeBox({ treeId, build, renderBoxFrame }: { treeId: string; build: (boxSize: BoxSizes) => BuiltExpressionTree | null; renderBoxFrame: (frame: OpenFrame) => ReactNode }) {
   const viewRef = useRef<HTMLSpanElement>(null)
   const [maxWidth, setMaxWidth] = useState<number | null>(null)
   const [sizes, setSizes] = useState<Map<string, { width: number; rows: number }>>(() => new Map())
@@ -1432,7 +1434,7 @@ function ExpressionTreeBox({ build, renderBoxFrame }: { build: (boxSize: BoxSize
   if (!built) return null
   const boxFrames = new Map(built.boxes.map((frame) => [`box:${frame.frameId}`, frame]))
   return (
-    <span className="frame-tree">
+    <span className="frame-tree" data-tree-id={treeId}>
       <span className="frame-tree-view" ref={viewRef} style={maxWidth ? { maxWidth } : undefined}>
         <TreeView tree={built.tree} layout={built.layout} label={built.text} animate renderBox={(key) => { const frame = boxFrames.get(key); return frame ? renderBoxFrame(frame) : null }} />
       </span>
@@ -2850,6 +2852,9 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
   // variable row down, so of the boxes around it the outermost that fits is
   // shown whole instead, the new one inside it. A box taller than the view
   // is left to the rules above. It is the same single scroll per step.
+  // A tree that opens (with «Ausdrücke als Bäume auswerten») counts as a box
+  // that opens: it too grows the boxes around it (P74), so of the tree and
+  // the boxes around it the outermost that fits is shown whole.
   //
   // Both directions scroll only this view, never the page around it
   // (scrollIntoView would also scroll e.g. a LiaScript course page, even
@@ -2862,10 +2867,13 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
     if (!container || !canvas || !committedRoot) return
     const margin = 12
 
-    const boxIds = [...committedRoot.querySelectorAll<HTMLElement>('.frame-box:not(.frame-box--root)')].map((box) => box.dataset.frameId ?? '')
+    // Boxes and trees, in document order (outer before inner).
+    const opener = '.frame-box:not(.frame-box--root), .frame-tree'
+    const openerId = (element: HTMLElement) => element.classList.contains('frame-tree') ? `tree:${element.dataset.treeId ?? ''}` : `box:${element.dataset.frameId ?? ''}`
+    const boxIds = [...committedRoot.querySelectorAll<HTMLElement>(opener)].map(openerId)
     const shown = shownBoxesRef.current
     shownBoxesRef.current = { steps: visualTraceSteps, ids: new Set(boxIds) }
-    // Open boxes form one chain: of several new ones (a jump), the innermost.
+    // Open boxes and trees form one chain: of several new ones (a jump), the innermost.
     const openedId = !compact && shown?.steps === visualTraceSteps ? boxIds.filter((id) => !shown.ids.has(id)).at(-1) : undefined
 
     const scrollToStep = () => {
@@ -2885,8 +2893,8 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
         else if (bottom + margin > nextTop + visibleHeight) nextTop = Math.min(top - margin, bottom + margin - visibleHeight)
       }
 
-      const opened = openedId === undefined ? null : root.querySelector<HTMLElement>(`.frame-box[data-frame-id="${openedId}"]`)
-      // The new box and the boxes it opened in, outermost first.
+      const opened = openedId === undefined ? null : [...root.querySelectorAll<HTMLElement>(opener)].find((element) => openerId(element) === openedId) ?? null
+      // The new box or tree and the boxes it opened in, outermost first.
       const around: HTMLElement[] = []
       for (let box: HTMLElement | null = opened; box && box !== root; box = box.parentElement?.closest<HTMLElement>('.frame-box') ?? null) around.unshift(box)
       const shownBox = around.find((box) => box.offsetHeight + 2 * margin <= container.clientHeight)
@@ -2919,11 +2927,24 @@ function GlPythonWorkspace(props: GlPythonWorkspaceProps) {
       else if (target.right + margin > nextLeft + container.clientWidth) nextLeft = target.right + margin - container.clientWidth
       container.scrollTo({ left: Math.max(0, nextLeft), top: Math.max(0, nextTop), behavior: animationsEnabledRef.current && !reducedMotionRef.current ? 'smooth' : 'auto' })
     }
-    // A new box's size may settle a render later (the tree mode measures its
-    // boxes as drawn, ExpressionTreeBox), so its step scrolls once in the
-    // next frame instead; every other step right away, as before.
+    // A new box's size may settle a render later (the trees measure the
+    // boxes in them as drawn, ExpressionTreeBox, and a tree around the boxes
+    // grows only then: until it has, the view can't scroll that far), so its
+    // step scrolls once the view's content stopped growing, at most some
+    // frames later; every other step right away, as before.
     if (openedId === undefined) { scrollToStep(); return }
-    const frame = requestAnimationFrame(scrollToStep)
+    let height = -1
+    let frames = 0
+    const settle = () => {
+      if (container.scrollHeight !== height && frames < 12) {
+        height = container.scrollHeight
+        frames += 1
+        frame = requestAnimationFrame(settle)
+        return
+      }
+      scrollToStep()
+    }
+    let frame = requestAnimationFrame(settle)
     return () => cancelAnimationFrame(frame)
   }, [isVisualizing, currentTraceStep]) // eslint-disable-line react-hooks/exhaustive-deps
 
