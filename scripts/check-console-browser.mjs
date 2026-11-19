@@ -2290,6 +2290,29 @@ try {
       await page.close()
     }
   })
+  await testCase('p74b-output-leading-spaces', async () => {
+    // P74 B (P59.2): a Run's output keeps its first line's leading spaces,
+    // and the lines after it stay as printed. The run's final output
+    // replaces what was streamed while it ran, so it's read once the run is
+    // over: the console takes a REPL input only then.
+    {
+      const page = await openEmbed({})
+      const frame = page.frameLocator('#embed')
+      try {
+        await page.evaluate((source) => window.send('run', source), 'print("  a")\nprint("b")\nprint("    c  d")\nprint(" e")\n')
+        await frame.locator('.console').getByText('c  d').waitFor({ timeout: 60000 })
+        await enterRepl(frame, '"fertig"')
+        await frame.locator('.console').getByText("'fertig'").waitFor({ timeout: 30000 })
+        assert.equal(await frame.locator('.console > pre').first().textContent(), '  a\nb\n    c  d\n e', 'the output as Python printed it')
+        console.log('a Run\'s output keeps its first line\'s leading spaces: ok')
+      } catch (error) {
+        failed += 1
+        console.error(error.message)
+        console.error('console:', JSON.stringify(await consoleText(frame).catch(() => '?')))
+      }
+      await page.close()
+    }
+  })
   await testCase('input-not-isolated', async () => {
     // Without isolation (as in LiaScript): Python's error and the hint.
     {
